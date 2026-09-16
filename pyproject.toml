@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apple-music-presence"
+version = "0.1.1"
+description = "Windows Apple Music to Discord Rich Presence desktop bridge"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "pypresence==4.6.2",
+  "winrt-runtime==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation.Collections==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Media==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Media.Control==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Storage.Streams==3.2.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+apple-music-presence = "apple_music_presence.app:main"
+
+[project.optional-dependencies]
+build = ["pyinstaller==6.22.3"]
+
+[project.gui-scripts]
+apple-music-presence-desktop = "apple_music_presence.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
