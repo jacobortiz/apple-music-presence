@@ -10,7 +10,8 @@ A Python desktop MVP that shares the current track from the **native Windows App
 - Pause, stop, missing metadata, and disappearing sessions clear the activity. Resume publishes the current track again.
 - Discord and Apple Music can be closed/reopened. The bridge rediscovers media sessions and retries Discord with exponential backoff up to 30 seconds.
 - Optional album art and a **Listen on Apple Music** button from Apple's public catalog. Art lookup is off by default.
-- Selected albums can use a hosted animated WebP/GIF/AVIF cover. Exact artist/album mappings work for every song on that album; other albums use the standard catalog lookup.
+- Automatically prefers motion covers for matched Apple Music albums when enabled. Normal artwork appears while a new animation is prepared, and remains when no motion cover is available. Converted WebPs are hosted in your chosen public GitHub repository and cached by album across songs and app restarts.
+- Bundled/personal album mappings can supply an existing animated WebP/GIF/AVIF immediately, without downloading or uploading another cover.
 - Fast artwork lookups (including covers cached in memory) join the first track update: the app allows up to 0.75 seconds for a cover before publishing text alone. Slow lookups continue in the background, and completed covers wake the polling loop early. Later artwork updates still respect the five-second send interval; Discord controls image loading on profiles.
 - Failed artwork lookups retry while the same song plays, with waits of 10, 20, 40, then 60 seconds. Temporary network failures are cached for only 10 seconds; confirmed catalog misses retain their 10-minute cache to avoid repeated searches for unavailable recordings. Retries pause when playback is paused, and changing tracks resets the retry delay.
 - Handles Apple Music's combined `Artist — Album` Windows metadata when its album field is empty. The desktop reports whether artwork is off, being looked up, unmatched, or sent to Discord.
@@ -22,7 +23,7 @@ This is a local desktop bridge. Discord desktop, Apple Music, and this app must 
 
 Download **AppleMusicPresence.exe** from this repository's Releases page, or use the executable included in the release ZIP. Python is bundled, so no Python installation is needed. Create a Discord application as described below, paste its Application ID into the window, and choose **Start sharing**. This is an unsigned Windows x64 MVP.
 
-The existing v0.1.1 release predates animated cover mappings and the faster artwork updates. Use the current source or build a new executable for these features.
+The existing v0.1.1 release predates automatic motion covers and the faster artwork updates. Use the current source or build a new executable for these features.
 
 For a preview without any account setup, run `AppleMusicPresence.exe --demo`. The executable also accepts the diagnostic and headless flags documented below.
 
@@ -44,6 +45,7 @@ Use **Windows 10 version 1809 or newer / Windows 11** and **64-bit Python 3.12**
 
 4. Paste the Application ID into the window and choose **Start sharing**. Play a track in Apple Music. Enable activity sharing in Discord's Activity Privacy settings if it is disabled.
 5. Optionally check **Use album artwork (animated covers where available)** before starting. Stop the bridge to change settings. Closing the window stops sharing and exits; minimizing keeps it running.
+6. For automatic motion artwork, check **Prefer animated covers whenever available**, enter a public GitHub host as `owner/repository`, and configure GitHub write access as described under [Animated album covers](#animated-album-covers). Normal artwork remains available if motion preparation or upload fails.
 
 After installation, `launch.cmd` in this folder opens the desktop window. The installed `apple-music-presence-desktop` launcher does the same. The app does not automatically start at sign-in.
 
@@ -87,8 +89,8 @@ Use Ctrl+C to stop and clear the activity. `--no-artwork` overrides saved opt-in
 - Detection polls once per second. Changed tracks, seeks, resume, and completed artwork lookups are sent at most once every **5 seconds**; rapid changes are coalesced to the latest track. This replaces the previous 15-second app delay. The first track is sent immediately after detection/connection. Discord may still buffer visible profile updates, so five seconds is our send interval, not a guaranteed display delay. Pypresence's quickstart retains 15-second guidance; the faster interval was checked against local Discord acknowledgements. Clear-on-pause/stop is immediate after detection. Updates/clears every 30 seconds probe idle connection health.
 - IPC operations time out after 5 seconds. Media requests time out after 5 seconds and get one immediate rediscovery attempt. Shutdown waits for an in-flight request to finish or time out before releasing resources.
 - Windows must receive the metadata from Apple Music. Local files, radio, streams, and some app versions may omit album, duration, or position. Missing timelines show no fabricated Discord timer. Nonstandard playback rates also omit the Discord timer. Artist and album share a Discord text field and may be shortened to its 128-character limit.
-- Album art is a best-effort catalog match using title **and** artist **and** album. Ambiguous, incomplete, region-specific, or mismatched results are omitted; remixes and live versions are not silently substituted. Artwork failure never blocks playback detection or sharing.
-- Enabling artwork sends those three metadata fields to `itunes.apple.com`. The app uses returned HTTPS artwork and track URLs; it does not upload local artwork, access your Apple account, or download the image itself. Results are cached in memory with requests spaced at least 3.2 seconds apart. Returned artwork is typically 100×100 pixels. [Apple's Search API documentation and artwork terms](https://performance-partners.apple.com/search-api) describe permitted uses.
+- Album art is a best-effort exact catalog match. Standard artwork uses title **and** artist **and** album. Automatic motion uses an exact artist/album lookup shared across songs, with song lookup as fallback. Ambiguous, incomplete, region-specific, or mismatched results are omitted; edition names are preserved. Artwork failure never blocks playback detection or sharing.
+- Enabling artwork sends metadata to `itunes.apple.com`. Automatic motion also fetches the matched public `music.apple.com` album page and its Apple-hosted video. It converts public video to a WebP and uploads it to the configured public GitHub repository. It never uploads your local music or accesses your Apple account. Catalog requests are spaced at least 3.2 seconds apart; ordinary covers are typically 100×100 pixels. [Apple's Search API documentation and artwork terms](https://performance-partners.apple.com/search-api) describe permitted uses.
 - Discord's profile layout determines whether timestamps appear as a progress bar or other time display. The activity name follows the track's artist. Buttons may not be clickable when viewing your own activity; inspect from another account to check their appearance.
 - An invalid Application ID or disabled Discord activity sharing cannot be repaired by reconnecting. Correct the ID or setting. Discord's browser version alone does not provide the desktop IPC connection used here.
 
@@ -97,7 +99,10 @@ Use Ctrl+C to stop and clear the activity. `--no-artwork` overrides saved opt-in
 ```text
 Tk desktop / CLI
        │
-PresenceService ───── optional MappedArtworkResolver → ItunesArtworkResolver
+PresenceService ───── optional MappedArtworkResolver
+       │                        └── AutomaticArtworkResolver → ItunesArtworkResolver
+       │                              ├── public Apple album page → local FFmpeg
+       │                              └── GithubArtworkHost → public animated WebP
        │
        ├── MediaBackend protocol → WindowsMediaBackend → Windows.Media.Control
        └── DiscordRpc → pypresence → Discord desktop named pipe
@@ -125,9 +130,26 @@ Verified September 15, 2026 against primary documentation, release packages, and
 
 ## Animated album covers
 
-Enable the artwork option to use the bundled album mappings in `src/apple_music_presence/album_artwork.json`. Mapped albums send their hosted animation URL directly to Discord, without querying an artwork website at runtime. Unmapped albums still use Apple's public catalog. The UI reports **Animated album art: sent to Discord** when an animated cover has been published.
+Enable **Prefer animated covers whenever available** and enter a public GitHub repository as `owner/repository`. The app checks each catalog-matched album's public Apple Music page for square motion artwork. It keeps normal artwork visible while preparing a 384×384, 15 fps looping WebP, then upgrades the same song's presence without waiting for the next song. Albums with no motion cover keep normal artwork.
 
-The first bundled cover is **The Weeknd — After Hours**: a [20-second looping WebP](https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours.webp), hosted in this repository. Play any song whose Windows metadata reports that artist and album to use it. Deluxe editions need their own mapping. See [artwork provenance and conversion details](artwork/README.md). Sending the animation is verified separately from its visible rendering; Discord controls profile image caching and animation playback.
+New covers are uploaded to the **motion-artwork** branch in your chosen repository, under `artwork/motion/`. This branch is created automatically; app source on the main branch is unaffected. Published URLs include their commit SHA to avoid stale negative image caching. Uploaded album identifiers and covers are public. Conversion runs locally, one album at a time. No-motion results are cached for a day, animations for seven days, and temporary failures retry after a minute. The local cache is `%LOCALAPPDATA%\AppleMusicPresence\motion_cache.json`; it holds artwork results, not song history.
+
+For GitHub access, use either:
+
+- An existing Git for Windows sign-in with repository **Contents: write** permission. The app retrieves it through Git's credential helper without opening prompts or saving the token in its settings.
+- A fine-grained GitHub token restricted to your artwork repository with **Contents: read and write**, supplied only through the `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN` environment variable. Do not paste it into the Application ID field or commit it to the repository.
+
+GitHub access is needed only to host new animations. If it is missing or expires, the app keeps normal covers and reports the upload problem. The converter accepts finite, unencrypted square SDR Apple streams of at most 60 seconds, limits video downloads to 24 MB, and limits WebPs to 8 MB. Apple page format changes, unavailable catalog entries, and unsupported streams safely fall back to normal artwork. Discord controls visible image loading and animation playback.
+
+Headless example (after configuring GitHub access):
+
+```powershell
+.\.venv\Scripts\python.exe -m apple_music_presence --headless --motion-artwork --artwork-repository owner/repository
+```
+
+The ordinary artwork option also uses bundled mappings in `src/apple_music_presence/album_artwork.json`. Mapped albums send their hosted animation URL directly to Discord without fetching or uploading again. The UI reports **Animated album art: sent to Discord** when an animated cover has been published.
+
+The first bundled cover is **The Weeknd — After Hours**: a [20-second looping WebP](https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours.webp), hosted in this repository. Play any song whose Windows metadata reports that artist and album to use it. Other editions go through automatic discovery when enabled. See [artwork provenance and conversion details](artwork/README.md).
 
 For a personal mapping without editing the source, create `%LOCALAPPDATA%\AppleMusicPresence\album_artwork.json` with this structure and replace the example values:
 
@@ -147,7 +169,7 @@ For a personal mapping without editing the source, create `%LOCALAPPDATA%\AppleM
 
 Use a direct HTTPS image URL that works without signing in, ending in `.webp`, `.gif`, or `.avif`. The Apple Music album URL supplies the **Listen on Apple Music** button for every song in that album. Matching normalizes punctuation, whitespace, and case but preserves edition names, featured artists, and other words. Conflicting entries are ignored rather than choosing an arbitrary cover. Restart the bridge after changing the map.
 
-Discord supports [animated external image URLs](https://docs.discord.com/developers/events/gateway-events#activity-object-activity-asset-image); video streams and MP4 URLs cannot be used as cover images. Obtain the motion cover once, convert/download an animated WebP, and publish that file on a stable public host. This app does not scrape Apple Music motion artwork automatically.
+Discord supports [animated external image URLs](https://docs.discord.com/developers/events/gateway-events#activity-object-activity-asset-image); video streams and MP4 URLs cannot be used as cover images. Automatic discovery reads public album pages without a MusicKit token. [imageio-ffmpeg 0.6.0](https://pypi.org/project/imageio-ffmpeg/0.6.0/) supplies the local converter; [GitHub's Contents API](https://docs.github.com/en/rest/repos/contents) publishes the converted file.
 
 ## Development and testing
 
@@ -157,6 +179,8 @@ Discord supports [animated external image URLs](https://docs.discord.com/develop
 ```
 
 Tests cover matching and Windows session selection, timeline normalization, pause/stop, unavailable sessions, progress/seek changes, update coalescing, reconnect/backoff, cancellation, fragmented IPC frames, clearing, and optional artwork failures. They use fixtures for Discord and catalog responses; no test publishes a profile activity.
+
+Motion tests cover album matching, same-song upgrades, cross-song/restart caching, static fallback, upload failures and retries, cancellation, HLS byte ranges, host restrictions, image validation, and keeping credentials off public image requests. Live automatic conversion/upload was verified for After Hours, and the no-motion fallback for GHOST DATA's Magical Metamorphosis. Visible animated profile rendering still needs to be checked in Discord.
 
 Live Windows detection, catalog matching, and profile display were verified during development. Discord acknowledged an activity update containing the cover as a proxied external image. To verify your setup: play a song, inspect your profile, pause/resume, seek, skip tracks, close/reopen Apple Music, close/reopen Discord, and finally stop the bridge. Allow the documented update interval after resume/skip/seek.
 

@@ -14,6 +14,7 @@ def main():
         "--name", "AppleMusicPresence", "--paths", str(root / "src"),
         "--collect-all", "winrt", "--distpath", str(root / "dist"),
         "--collect-data", "apple_music_presence",
+        "--collect-all", "imageio_ffmpeg",
         "--workpath", str(root / "build"), "--specpath", str(root / "build"),
         str(root / "desktop_entry.py"),
     ])

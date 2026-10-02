@@ -90,3 +90,18 @@ class MappedArtworkResolver:
             if artwork is not None:
                 return artwork
         return await self.catalog.resolve(title, artist, album)
+
+    @property
+    def status(self):
+        return getattr(self.catalog, "status", "")
+
+    async def refresh(self, title, artist, album):
+        if (_normalize(artist), _normalize(album)) in self._albums:
+            return self._albums[(_normalize(artist), _normalize(album))]
+        refresh = getattr(self.catalog, "refresh", None)
+        return await refresh(title, artist, album) if refresh else None
+
+    async def close(self):
+        close = getattr(self.catalog, "close", None)
+        if close:
+            await close()

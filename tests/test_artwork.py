@@ -26,6 +26,25 @@ def catalog_result(**changes):
 
 
 class ArtworkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_album_lookup_reuses_cover_across_songs_and_preserves_editions(self):
+        resolver = ItunesArtworkResolver()
+        result = {"collectionType": "Album", "artistName": "Artist", "collectionName": "Album",
+                  "artworkUrl100": ART_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
+        with patch("apple_music_presence.artwork._fetch_json", return_value={"results": [result]}) as fetch:
+            first = await resolver.resolve_album("Artist", "Album")
+            self.assertEqual(first, await resolver.resolve_album("ARTIST", " Album "))
+            fetch.assert_called_once()
+            self.assertEqual(parse_qs(urlsplit(fetch.call_args.args[0]).query)["entity"], ["album"])
+            self.assertIsNone(await resolver.resolve_album("Artist", "Album (Deluxe)"))
+
+    async def test_album_lookup_omits_ambiguous_art_and_wrong_artists(self):
+        result = {"collectionType": "Album", "artistName": "Artist", "collectionName": "Album",
+                  "artworkUrl100": ART_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
+        for results in ([result, {**result, "collectionViewUrl": "https://music.apple.com/us/album/album/999"}],
+                        [{**result, "artistName": "Other"}], [{**result, "collectionName": "Album (Live)"}]):
+            with patch("apple_music_presence.artwork._fetch_json", return_value={"results": results}):
+                self.assertIsNone(await ItunesArtworkResolver().resolve_album("Artist", "Album"))
+
     async def test_exact_match_and_cache_avoid_duplicate_network_requests(self):
         resolver = ItunesArtworkResolver(country="gb")
         with patch("apple_music_presence.artwork._fetch_json", return_value={"results": [catalog_result()]}) as fetch:

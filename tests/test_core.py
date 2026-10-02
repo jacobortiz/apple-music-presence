@@ -90,6 +90,33 @@ class FakeRpc:
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ready_motion_cover_upgrades_same_song_and_pause_clears_immediately(self):
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        static = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/album/x/123")
+        animated = Artwork("https://example.org/cover.webp", static.track_url, animated=True)
+        resolver = SimpleNamespace(resolve=AsyncMock(return_value=static),
+                                   refresh=AsyncMock(return_value=static), close=AsyncMock(),
+                                   status="Motion cover: preparing animation; using normal artwork")
+        self.service.artwork = resolver
+        status = await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], static.url)
+        self.assertIn("preparing animation", status.artwork_status)
+        resolver.refresh.return_value = animated
+        self.clock_value += 2
+        await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], static.url)
+        self.clock_value += 3
+        status = await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], animated.url)
+        self.assertEqual(status.artwork_status, "Animated album art: sent to Discord")
+        self.backend.value = snapshot(PlaybackState.PAUSED)
+        await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1], "clear")
+        await self.service.close()
+        resolver.close.assert_awaited_once()
+        self.service.artwork = None
+
     async def asyncSetUp(self):
         self.backend, self.rpc = FakeBackend(), FakeRpc()
         self.service = PresenceService(self.backend, self.rpc)

@@ -77,6 +77,12 @@ class PresenceService:
             if self._art_result is None:
                 self._art_next_retry = time.monotonic() + self._art_retry_delay
                 self._art_retry_delay = min(ARTWORK_MAX_RETRY_SECONDS, self._art_retry_delay * 2)
+        if (track and self._art_result and snapshot.state == PlaybackState.PLAYING
+                and not getattr(self._art_result, "animated", False)
+                and hasattr(self.artwork, "refresh")):
+            upgraded = await self.artwork.refresh(track.title, track.artist, track.album)
+            if upgraded:
+                self._art_result = upgraded
         return self._art_result
 
     async def tick(self) -> ServiceStatus:
@@ -145,6 +151,8 @@ class PresenceService:
                 sent = self._last_payload and self._last_payload.get("large_image") == artwork.url
                 label = "Animated album art" if getattr(artwork, "animated", False) else "Album art"
                 art_status = f"{label}: sent to Discord" if sent else f"{label}: found; waiting to publish"
+                if not getattr(artwork, "animated", False) and getattr(self.artwork, "status", ""):
+                    art_status = self.artwork.status
             elif snapshot.state != PlaybackState.PLAYING:
                 art_status = "Album art: lookup resumes with playback"
             else:
@@ -181,4 +189,8 @@ class PresenceService:
             try:
                 await self.rpc.close()
             finally:
-                await self.backend.close()
+                try:
+                    if self.artwork and hasattr(self.artwork, "close"):
+                        await self.artwork.close()
+                finally:
+                    await self.backend.close()

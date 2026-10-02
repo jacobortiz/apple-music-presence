@@ -11,6 +11,8 @@ import re
 class Settings:
     client_id: str = ""
     artwork: bool = False
+    motion_artwork: bool = False
+    artwork_repository: str = ""
     country: str = "US"
     source_id: str = ""
 
@@ -18,10 +20,16 @@ class Settings:
         self.client_id = self.client_id.strip()
         self.country = self.country.strip().upper()
         self.source_id = self.source_id.strip()
+        self.artwork_repository = self.artwork_repository.strip()
         if not demo and not re.fullmatch(r"[0-9]{17,20}", self.client_id):
             raise ValueError("Enter the 17–20 digit Application ID from the Discord Developer Portal.")
         if not re.fullmatch(r"[A-Z]{2}", self.country):
             raise ValueError("Country must be a two-letter store code, such as US or GB.")
+        if self.motion_artwork:
+            from .motion_artwork import REPOSITORY_PATTERN
+            if not re.fullmatch(REPOSITORY_PATTERN, self.artwork_repository):
+                raise ValueError("Enter a public GitHub artwork host as owner/repository.")
+            self.artwork = True
 
 
 def settings_path() -> Path:
@@ -35,6 +43,8 @@ def load_settings(path: Path | None = None) -> Settings:
         return Settings(
             client_id=data.get("client_id", "") if isinstance(data.get("client_id"), str) else "",
             artwork=data.get("artwork") is True,
+            motion_artwork=data.get("motion_artwork") is True,
+            artwork_repository=data.get("artwork_repository", "") if isinstance(data.get("artwork_repository"), str) else "",
             country=data.get("country", "US") if isinstance(data.get("country"), str) else "US",
             source_id=data.get("source_id", "") if isinstance(data.get("source_id"), str) else "",
         )

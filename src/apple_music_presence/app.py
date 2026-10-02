@@ -21,8 +21,14 @@ def make_service(settings, notify, demo=False):
     from .media import WindowsMediaBackend
     from .artwork import ItunesArtworkResolver
     from .album_artwork import MappedArtworkResolver
-    resolver = MappedArtworkResolver.load(ItunesArtworkResolver(country=settings.country),
-        settings_path().with_name("album_artwork.json")) if settings.artwork else None
+    resolver = None
+    if settings.artwork:
+        catalog = ItunesArtworkResolver(country=settings.country)
+        if settings.motion_artwork:
+            from .motion_artwork import AutomaticArtworkResolver, GithubArtworkHost
+            catalog = AutomaticArtworkResolver(catalog, GithubArtworkHost(settings.artwork_repository),
+                settings_path().with_name("motion_cache.json"))
+        resolver = MappedArtworkResolver.load(catalog, settings_path().with_name("album_artwork.json"))
     return PresenceService(WindowsMediaBackend(source_id=settings.source_id or None),
                            DiscordRpc(settings.client_id), artwork=resolver, notify=notify)
 
@@ -56,6 +62,9 @@ def main(argv=None):
     parser.add_argument("--artwork", action=argparse.BooleanOptionalAction, default=None,
                         help="Opt into public Apple catalog matching for artwork")
     parser.add_argument("--country", help="Two-letter Apple catalog country code; default US")
+    parser.add_argument("--motion-artwork", action=argparse.BooleanOptionalAction, default=None,
+                        help="Prefer motion covers and upload new animations to the configured public GitHub host")
+    parser.add_argument("--artwork-repository", help="Public GitHub artwork host as owner/repository")
     parser.add_argument("--seconds", type=float, help="Exit after this many seconds (useful for a smoke test)")
     parser.add_argument("--verbose", action="store_true", help="Enable technical diagnostic logging")
     args = parser.parse_args(argv)
@@ -66,10 +75,12 @@ def main(argv=None):
     if sys.platform != "win32" and not args.demo:
         parser.error("Live detection requires Windows 10 1809 or newer; use --demo for an offline preview")
     settings = load_settings()
-    for key in ("client_id", "source_id", "artwork", "country"):
+    for key in ("client_id", "source_id", "artwork", "country", "motion_artwork", "artwork_repository"):
         value = getattr(args, key)
         if value is not None:
             setattr(settings, key, value)
+    if args.artwork is False:
+        settings.motion_artwork = False
     try:
         if args.diagnose:
             asyncio.run(diagnose(settings.source_id))

@@ -26,8 +26,8 @@ class DesktopApp:
         self.settings, self.make_service, self.demo = settings, make_service, demo
         self.root = tk.Tk()
         self.root.title("Apple Music Presence" + (" — Offline preview" if demo else ""))
-        self.root.geometry("650x660")
-        self.root.minsize(590, 645)
+        self.root.geometry("650x790")
+        self.root.minsize(590, 770)
         self.root.configure(bg="#111318")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.events = queue.SimpleQueue()
@@ -85,9 +85,19 @@ class DesktopApp:
         self.id_entry = ttk.Entry(main, textvariable=self.client_id)
         self.id_entry.pack(fill="x")
         self.artwork_enabled = tk.BooleanVar(value=self.settings.artwork)
-        self.art_check = ttk.Checkbutton(main, text="Use album artwork (animated covers where available)", variable=self.artwork_enabled)
+        self.art_check = ttk.Checkbutton(main, text="Use album artwork (animated covers where available)",
+                                        variable=self.artwork_enabled, command=self._toggle_artwork)
         self.art_check.pack(anchor="w", pady=(13, 2))
         ttk.Label(main, text="For other albums, sends song, artist, and album to Apple for matching.",
+                  style="Muted.TLabel", wraplength=560).pack(anchor="w")
+        self.motion_enabled = tk.BooleanVar(value=self.settings.motion_artwork)
+        self.motion_check = ttk.Checkbutton(main, text="Prefer animated covers whenever available",
+                                            variable=self.motion_enabled, command=self._toggle_motion)
+        self.motion_check.pack(anchor="w", pady=(9, 2))
+        self.artwork_repository = tk.StringVar(value=self.settings.artwork_repository)
+        self.host_entry = ttk.Entry(main, textvariable=self.artwork_repository)
+        self.host_entry.pack(fill="x", pady=(2, 4))
+        ttk.Label(main, text="Public GitHub host: owner/repository. New motion covers are uploaded there using your GitHub sign-in; normal covers stay available while preparing.",
                   style="Muted.TLabel", wraplength=560).pack(anchor="w")
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(18, 12))
@@ -106,11 +116,22 @@ class DesktopApp:
             self.start_button.configure(text="Start preview")
             self.id_entry.configure(state="disabled")
             self.art_check.configure(state="disabled")
+            self.motion_check.configure(state="disabled")
+            self.host_entry.configure(state="disabled")
+
+    def _toggle_artwork(self):
+        if not self.artwork_enabled.get():
+            self.motion_enabled.set(False)
+
+    def _toggle_motion(self):
+        if self.motion_enabled.get():
+            self.artwork_enabled.set(True)
 
     def start(self):
         if self.worker and self.worker.is_alive():
             return
-        settings = replace(self.settings, client_id=self.client_id.get(), artwork=self.artwork_enabled.get())
+        settings = replace(self.settings, client_id=self.client_id.get(), artwork=self.artwork_enabled.get(),
+                           motion_artwork=self.motion_enabled.get(), artwork_repository=self.artwork_repository.get())
         try:
             settings.validate(demo=self.demo)
             if not self.demo:
@@ -119,6 +140,7 @@ class DesktopApp:
             messagebox.showerror("Check setup", str(exc), parent=self.root)
             return
         self.settings = settings
+        self.artwork_enabled.set(settings.artwork)
         self.stop_event = threading.Event()
         self.last_status = None
         self.worker_error = None
@@ -126,6 +148,8 @@ class DesktopApp:
         self.stop_button.configure(state="normal")
         self.id_entry.configure(state="disabled")
         self.art_check.configure(state="disabled")
+        self.motion_check.configure(state="disabled")
+        self.host_entry.configure(state="disabled")
         self.status_label.configure(text="Connecting…")
         self.art_status_label.configure(text="")
 
@@ -176,6 +200,8 @@ class DesktopApp:
                 if not self.demo:
                     self.id_entry.configure(state="normal")
                     self.art_check.configure(state="normal")
+                    self.motion_check.configure(state="normal")
+                    self.host_entry.configure(state="normal")
         if self.closing:
             if not self.worker or not self.worker.is_alive():
                 self.root.destroy()

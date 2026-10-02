@@ -102,6 +102,25 @@ def _match(payload: object, key: tuple[str, str, str]) -> Artwork | None:
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+def _match_album(payload: object, key: tuple[str, str, str]) -> Artwork | None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return None
+    matches = set()
+    for result in payload["results"]:
+        if not isinstance(result, dict) or result.get("collectionType") != "Album":
+            continue
+        values = (result.get("artistName"), result.get("collectionName"))
+        if any(not isinstance(value, str) for value in values):
+            continue
+        if tuple(_normalize(value) for value in values) != key[1:]:
+            continue
+        url = _safe_url(result.get("artworkUrl100"), artwork=True)
+        page = _safe_url(result.get("collectionViewUrl"), artwork=False)
+        if url and page:
+            matches.add(Artwork(url, page))
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 class ItunesArtworkResolver:
     """Conservative, asynchronous catalog lookup with a bounded in-memory LRU.
 
@@ -138,6 +157,19 @@ class ItunesArtworkResolver:
         key = tuple(_normalize(value) for value in metadata)
         if not all(key):
             return None
+        return await self._lookup(metadata, key, "song", _match)
+
+    async def resolve_album(self, artist: str, album: str) -> Artwork | None:
+        """Album artwork is shared across tracks, with exact artist/edition matching."""
+        metadata = (artist, album)
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 512 for value in metadata):
+            return None
+        normalized = tuple(_normalize(value) for value in metadata)
+        if not all(normalized):
+            return None
+        return await self._lookup(metadata, ("", *normalized), "album", _match_album)
+
+    async def _lookup(self, metadata, key, entity, match):
         async with self._lock:
             now = monotonic()
             cached = self._cache.get(key)
@@ -155,7 +187,7 @@ class ItunesArtworkResolver:
                     "term": " ".join(value.strip() for value in metadata),
                     "country": self.country,
                     "media": "music",
-                    "entity": "song",
+                    "entity": entity,
                     "limit": 25,
                 }
             )
@@ -163,7 +195,7 @@ class ItunesArtworkResolver:
                 payload = await asyncio.to_thread(
                     _fetch_json, f"https://itunes.apple.com/search?{query}", self.timeout
                 )
-                result = _match(payload, key)
+                result = match(payload, key)
                 ttl = 24 * 60 * 60 if result else 10 * 60
             except (OSError, ValueError, TypeError) as error:
                 # Deliberately avoid logging the query or listener metadata.
