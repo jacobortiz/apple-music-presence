@@ -6,15 +6,6 @@ from typing import Any
 from .models import MediaSnapshot, PlaybackState
 
 
-# Public Apple Music app icon from Apple's App Store catalog (1108187390).
-# Passed directly to Discord; the bridge does not download it or use accounts.
-APPLE_MUSIC_ICON = (
-    "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/ce/e5/e7/"
-    "cee5e74c-d943-b7fc-02ac-70220d7dd16d/"
-    "musicCalistoga-0-0-1x_U007epad-0-1-0-85-220.png/100x100bb.jpg"
-)
-
-
 def discord_text(value: str) -> str:
     # Discord's details/state fields must contain 2–128 characters.
     text = " ".join(value.split())[:128]
@@ -33,8 +24,6 @@ def build_presence(snapshot: MediaSnapshot, now: float, artwork: Any = None) -> 
         "status_display_type": 1,
         "details": discord_text(track.title),
         "state": discord_text(track.artist if track.artist.strip() else "Apple Music"),
-        "small_image": APPLE_MUSIC_ICON,
-        "small_text": "Apple Music",
     }
     position = snapshot.position_at(now)
     duration = snapshot.duration

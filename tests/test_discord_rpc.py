@@ -173,8 +173,6 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
                 end=1700000123,
                 large_image="https://example.org/cover.jpg",
                 large_text="An album",
-                small_image="https://example.org/apple-music.jpg",
-                small_text="Apple Music",
             )
         )
         await asyncio.sleep(0)
@@ -192,8 +190,8 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activity["timestamps"], {"start": 1700000000, "end": 1700000123})
         self.assertEqual(activity["assets"]["large_image"], "https://example.org/cover.jpg")
         self.assertEqual(activity["assets"]["large_text"], "An album")
-        self.assertEqual(activity["assets"]["small_image"], "https://example.org/apple-music.jpg")
-        self.assertEqual(activity["assets"]["small_text"], "Apple Music")
+        self.assertNotIn("small_image", activity["assets"])
+        self.assertNotIn("small_text", activity["assets"])
         self.client.sock_reader.feed_data(frame({"nonce": payload["nonce"], "evt": None}))
         await task
 

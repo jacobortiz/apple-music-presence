@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from apple_music_presence.models import MediaSnapshot, PlaybackState, Track
-from apple_music_presence.presence import APPLE_MUSIC_ICON, build_presence, materially_changed
+from apple_music_presence.presence import build_presence, materially_changed
 from apple_music_presence.service import PresenceService
 
 
@@ -32,8 +32,8 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(payload["details"], "Song")
         self.assertIn("Artist", payload["state"])
         self.assertEqual(payload["state"], "Artist")
-        self.assertEqual(payload["small_image"], APPLE_MUSIC_ICON)
-        self.assertEqual(payload["small_text"], "Apple Music")
+        self.assertNotIn("small_image", payload)
+        self.assertNotIn("small_text", payload)
         self.assertEqual((payload["start"], payload["end"]), (990, 1190))
 
     def test_member_list_uses_only_artist_while_profile_retains_app_name(self):
