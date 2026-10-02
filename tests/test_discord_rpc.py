@@ -6,7 +6,7 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from pypresence.exceptions import InvalidPipe
+from pypresence.exceptions import InvalidPipe, ServerError
 
 from apple_music_presence.discord_rpc import (
     DiscordRpc,
@@ -225,6 +225,24 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connect.await_args_list[1].args, (r"\\?\pipe\discord-ipc-1",))
         payload = json.loads(self.client.sock_writer.frames[0][8:])
         self.assertEqual(payload, {"v": 1, "client_id": "123456789012345678"})
+
+    async def test_unrelated_error_does_not_reject_pending_command(self):
+        self.client._expected_nonce = "wanted"
+        self.client.sock_reader.feed_data(
+            frame({"nonce": "old", "evt": "ERROR", "data": {"message": "Old request failed"}})
+            + frame({"nonce": "wanted", "evt": None})
+        )
+        self.assertEqual(await self.client.read_output(), {"nonce": "wanted", "evt": None})
+        self.assertIsNone(self.client._expected_nonce)
+
+    async def test_matching_error_rejects_pending_command(self):
+        self.client._expected_nonce = "wanted"
+        self.client.sock_reader.feed_data(
+            frame({"nonce": "wanted", "evt": "ERROR", "data": {"message": "Invalid activity"}})
+        )
+        with self.assertRaisesRegex(ServerError, "Invalid activity"):
+            await self.client.read_output()
+        self.assertIsNone(self.client._expected_nonce)
 
     async def test_discord_rejection_has_readable_error(self):
         self.client.sock_reader.feed_data(frame({"message": "Invalid Client ID"}, 2))

@@ -359,6 +359,50 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
         self.assertIn("sent to Discord", status.artwork_status)
 
+    async def test_refresh_failure_keeps_sharing_and_can_upgrade_later(self):
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        static = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/album/x/123")
+        animated = Artwork("https://example.org/cover.webp", static.track_url, True)
+        self.service.artwork = SimpleNamespace(resolve=AsyncMock(return_value=static),
+                                              refresh=AsyncMock(side_effect=[OSError("unavailable"), animated]))
+        status = await self.service.tick()
+        self.assertTrue(status.sharing)
+        self.assertEqual(self.rpc.calls[-1]["large_image"], static.url)
+        self.clock_value += 5
+        await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], animated.url)
+        self.backend.value = snapshot(PlaybackState.PAUSED)
+        status = await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1], "clear")
+        self.assertIn("resumes with playback", status.artwork_status)
+
+    async def test_cancelled_optional_lookup_retries_without_stopping_sharing(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/album/x/123")
+        resolve = AsyncMock(side_effect=[asyncio.CancelledError(), art])
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        status = await self.service.tick()
+        self.assertTrue(status.sharing)
+        self.assertNotIn("large_image", self.rpc.calls[-1])
+        self.clock_value += 10
+        await self.service.tick()
+        await asyncio.sleep(0)
+        await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
+
+    async def test_cancelling_bridge_during_refresh_still_propagates(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/album/x/123")
+        self.service.artwork = SimpleNamespace(resolve=AsyncMock(return_value=art),
+                                              refresh=AsyncMock(side_effect=asyncio.CancelledError))
+        with self.assertRaises(asyncio.CancelledError):
+            await self.service.tick()
+
     async def test_artwork_failures_back_off_to_one_attempt_per_minute(self):
         import asyncio
         from unittest.mock import AsyncMock

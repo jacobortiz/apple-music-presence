@@ -87,14 +87,15 @@ outer DiscordRpc adapter supplies a deadline for the entire request.
             response = json.loads(body)
             if not isinstance(response, dict):
                 raise DiscordRpcError("Discord returned an invalid IPC response.")
-            if response.get("evt") == "ERROR":
-                data = response.get("data") or {}
-                raise ServerError(data.get("message", "Discord rejected the request."))
-            # Unsolicited events must not count as command acknowledgements.
+            # Unsolicited events, including errors for other requests, must not
+            # acknowledge or reject the command currently awaiting a response.
             if self._expected_nonce is not None:
                 if response.get("nonce") != self._expected_nonce:
                     continue
                 self._expected_nonce = None
+            if response.get("evt") == "ERROR":
+                data = response.get("data") or {}
+                raise ServerError(data.get("message", "Discord rejected the request."))
             return response
 
     async def clear(self, pid: int = os.getpid()) -> dict[str, Any]:

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 
 
 @dataclass
@@ -21,7 +22,9 @@ class Settings:
         self.country = self.country.strip().upper()
         self.source_id = self.source_id.strip()
         self.artwork_repository = self.artwork_repository.strip()
-        if not demo and not re.fullmatch(r"[0-9]{17,20}", self.client_id):
+        if demo:
+            return
+        if not re.fullmatch(r"[0-9]{17,20}", self.client_id):
             raise ValueError("Enter the 17–20 digit Application ID from the Discord Developer Portal.")
         if not re.fullmatch(r"[A-Z]{2}", self.country):
             raise ValueError("Country must be a two-letter store code, such as US or GB.")
@@ -55,6 +58,13 @@ def load_settings(path: Path | None = None) -> Settings:
 def save_settings(settings: Settings, path: Path | None = None):
     destination = path or settings_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps(asdict(settings), indent=2) + "\n", encoding="utf-8")
-    temporary.replace(destination)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent,
+                                         prefix=destination.name + ".", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(asdict(settings), indent=2) + "\n")
+        temporary.replace(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

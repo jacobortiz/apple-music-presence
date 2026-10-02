@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Show the current artist in the member list while retaining the Apple Music profile heading.
+- Prefer motion covers, with public Apple Music page fallback and album caching across guest artists.
+- Reduce changed-activity updates to a five-second interval and retry missing artwork during playback.
+- Keep sharing alive after optional artwork failures; show accurate paused artwork status.
+- Ignore unrelated Discord command errors, stop artwork work promptly on shutdown, and bound cached status entries.
+- Fix offline preview validation and concurrent settings saves; add regression tests.
+
 ## 0.1.1
 
 - Read the current native Apple Music track on Windows and display a Discord Listening activity with title, artist, album, and playback timestamps.

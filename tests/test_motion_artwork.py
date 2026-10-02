@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
@@ -61,6 +62,27 @@ class MotionFormatTests(unittest.TestCase):
                 self.assertNotIn("https:", local)
                 self.assertEqual(local.count("segment-0.mp4"), 3)
                 self.assertIn("#EXT-X-BYTERANGE:20@40", local)
+
+    def test_cancelled_download_does_not_start_another_request(self):
+        stop = threading.Event()
+        stop.set()
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("apple_music_presence.motion_artwork._download") as fetch:
+                with self.assertRaisesRegex(ValueError, "cancelled"):
+                    download_video(STREAM, Path(folder), stop)
+                fetch.assert_not_called()
+
+            stop.clear()
+            master = '#EXTM3U\n#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=408x408\nvariant.m3u8\n'
+
+            def download_master(*args):
+                stop.set()
+                return master.encode()
+
+            with patch("apple_music_presence.motion_artwork._download", side_effect=download_master) as fetch:
+                with self.assertRaisesRegex(ValueError, "cancelled"):
+                    download_video(STREAM, Path(folder), stop)
+                fetch.assert_called_once()
 
     def test_hls_foreign_host_encryption_and_long_loops_are_rejected(self):
         master = '#EXTM3U\n#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=408x408\nvariant.m3u8\n'
@@ -136,6 +158,15 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(second.animated)
             self.assertFalse(self.resolver._jobs)
             discover.assert_called_once()
+
+    async def test_motion_cache_eviction_cleans_up_album_status(self):
+        with patch("apple_music_presence.motion_artwork.discover_motion", return_value=None):
+            for album_id in range(129):
+                page = f"https://music.apple.com/us/album/album/{album_id}"
+                await self.resolver._prepare(f"album:us:{album_id}", page, "Artist", "Album")
+        self.assertEqual(len(self.resolver._cache), 128)
+        self.assertEqual(len(self.resolver._statuses), 128)
+        self.assertNotIn("album:us:0", self.resolver._statuses)
 
     async def test_guest_artists_reuse_one_verified_album_animation(self):
         with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM) as discover:
@@ -265,6 +296,30 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MotionHostingTests(unittest.TestCase):
+    def test_cancelled_upload_skips_credentials_and_followup_requests(self):
+        content = (Path(__file__).resolve().parents[1] / "artwork" / "after-hours.webp").read_bytes()
+        host = GithubArtworkHost("owner/repo")
+        stop = threading.Event()
+        stop.set()
+        with patch("apple_music_presence.motion_artwork.github_token") as token:
+            with patch("apple_music_presence.motion_artwork._download") as fetch:
+                with self.assertRaisesRegex(ValueError, "cancelled"):
+                    host.publish("123", STREAM, content, stop)
+                token.assert_not_called()
+                fetch.assert_not_called()
+
+        stop.clear()
+
+        def repo_metadata(*args, **kwargs):
+            stop.set()
+            return b'{"private":false,"permissions":{"push":true}}'
+
+        with patch("apple_music_presence.motion_artwork.github_token", return_value="secret-fixture"):
+            with patch("apple_music_presence.motion_artwork._download", side_effect=repo_metadata) as fetch:
+                with self.assertRaisesRegex(ValueError, "cancelled"):
+                    host.publish("123", STREAM, content, stop)
+                fetch.assert_called_once()
+
     def test_host_auth_stays_on_github_api_and_new_image_uses_immutable_commit(self):
         content = (Path(__file__).resolve().parents[1] / "artwork" / "after-hours.webp").read_bytes()
         calls = []

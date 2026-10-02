@@ -71,6 +71,10 @@ class PresenceService:
         if self._art_task and self._art_task.done():
             try:
                 self._art_result = self._art_task.result()
+            except asyncio.CancelledError:
+                # A cancelled optional lookup is not a cancelled bridge.
+                # Cancellation of tick/run still propagates at their awaits.
+                log.debug("Optional artwork lookup was cancelled; retrying later")
             except Exception:
                 log.debug("Optional artwork lookup failed", exc_info=True)
             self._art_task = None
@@ -80,9 +84,13 @@ class PresenceService:
         if (track and self._art_result and snapshot.state == PlaybackState.PLAYING
                 and not getattr(self._art_result, "animated", False)
                 and hasattr(self.artwork, "refresh")):
-            upgraded = await self.artwork.refresh(track.title, track.artist, track.album)
-            if upgraded:
-                self._art_result = upgraded
+            try:
+                upgraded = await self.artwork.refresh(track.title, track.artist, track.album)
+                if upgraded:
+                    self._art_result = upgraded
+            except Exception:
+                # Keep the already matched cover and ordinary sharing alive.
+                log.debug("Optional artwork refresh failed", exc_info=True)
         return self._art_result
 
     async def tick(self) -> ServiceStatus:
@@ -145,6 +153,8 @@ class PresenceService:
         if self.artwork:
             if not snapshot.track:
                 art_status = "Album art: waiting for a track"
+            elif snapshot.state != PlaybackState.PLAYING:
+                art_status = "Album art: lookup resumes with playback"
             elif self._art_task:
                 art_status = "Album art: looking up this track…"
             elif artwork:
@@ -153,8 +163,6 @@ class PresenceService:
                 art_status = f"{label}: sent to Discord" if sent else f"{label}: found; waiting to publish"
                 if not getattr(artwork, "animated", False) and getattr(self.artwork, "status", ""):
                     art_status = self.artwork.status
-            elif snapshot.state != PlaybackState.PLAYING:
-                art_status = "Album art: lookup resumes with playback"
             else:
                 art_status = "Album art: no catalog match or lookup unavailable; retrying automatically"
         status = ServiceStatus(snapshot, message, self.rpc.connected,

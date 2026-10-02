@@ -146,6 +146,8 @@ def discover_motion(page, artist, album):
 
 def download_video(stream, directory, stop=None):
     """Restrict HLS to Apple's HTTPS hosts before giving local bytes to FFmpeg."""
+    if stop and stop.is_set():
+        raise ValueError("Motion download cancelled")
     master = _download(stream, 128 * 1024).decode("utf-8")
     lines = master.splitlines()
     choices = []
@@ -159,6 +161,8 @@ def download_video(stream, directory, stop=None):
     if not choices:
         raise ValueError("No supported square SDR rendition")
     variant = min(choices)[1]
+    if stop and stop.is_set():
+        raise ValueError("Motion download cancelled")
     playlist = _download(variant, 128 * 1024).decode("utf-8")
     if "#EXT-X-ENDLIST" not in playlist or "#EXT-X-KEY" in playlist:
         raise ValueError("Only finite, unencrypted motion covers are supported")
@@ -291,20 +295,26 @@ class GithubArtworkHost:
         import base64
         if not album_id.isdigit() or not _apple_stream(stream) or not animated_webp(content):
             raise ValueError("Invalid motion cover")
+
+        def checkpoint():
+            if stop and stop.is_set():
+                raise ValueError("Motion upload cancelled")
+
+        checkpoint()
         token = github_token(self.repository)
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"}
         base = f"https://api.github.com/repos/{self.repository}"
 
         def api(path, method=None, data=None):
-            if stop and stop.is_set():
-                raise ValueError("Motion upload cancelled")
+            checkpoint()
             encoded = json.dumps(data).encode() if data is not None else None
             return json.loads(_download(base + path, 256 * 1024, headers=headers, method=method, data=encoded))
 
         repo = api("")
         if repo.get("private") is not False or not repo.get("permissions", {}).get("push"):
             raise ValueError("Artwork host requires a writable public GitHub repository")
+        checkpoint()
         identity = json.loads(_download("https://api.github.com/user", 64 * 1024, headers=headers))
         login, user_id = identity.get("login"), identity.get("id")
         if not isinstance(login, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login) or type(user_id) is not int or user_id <= 0:
@@ -328,6 +338,7 @@ class GithubArtworkHost:
             return f"https://raw.githubusercontent.com/{self.repository}/{commit}/{path}"
         url = public_url(ref["object"]["sha"])
         try:
+            checkpoint()
             existing = _download(url, MAX_IMAGE_BYTES)
             if not animated_webp(existing):
                 raise ValueError("Hosted cover is not animated WebP")
@@ -336,8 +347,7 @@ class GithubArtworkHost:
             if error.code != 404:
                 raise
         try:
-            if stop and stop.is_set():
-                raise ValueError("Motion upload cancelled")
+            checkpoint()
             uploaded = api(f"/contents/{path}", "PUT", {"branch": self.branch,
                 "message": f"Cache motion cover for Apple Music album {album_id}",
                 "committer": committer, "author": committer,
@@ -348,15 +358,18 @@ class GithubArtworkHost:
                 raise
             url = public_url(api(f"/git/ref/heads/{self.branch}")["object"]["sha"])
         for attempt in range(3):
-            if stop and stop.is_set():
-                raise ValueError("Motion upload cancelled")
+            checkpoint()
             try:
                 hosted = _download(url, MAX_IMAGE_BYTES)
                 break
             except HTTPError as error:
                 if error.code != 404 or attempt == 2:
                     raise
-                time.sleep(0.5 * (attempt + 1))
+                delay = 0.5 * (attempt + 1)
+                if stop:
+                    stop.wait(delay)
+                else:
+                    time.sleep(delay)
         if not animated_webp(hosted):
             raise ValueError("Public cover verification failed")
         return url
@@ -450,7 +463,8 @@ class AutomaticArtworkResolver:
                 self._cache[key] = _MotionCache(cover, time.time() + (7 if cover else 1) * 86400)
                 self._cache.move_to_end(key)
                 while len(self._cache) > 128:
-                    self._cache.popitem(last=False)
+                    discarded, _ = self._cache.popitem(last=False)
+                    self._statuses.pop(discarded, None)
                 self._statuses[key] = "" if cover else "Motion cover: unavailable for this album; using normal artwork"
                 self._save()
         except asyncio.CancelledError:
