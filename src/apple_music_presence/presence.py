@@ -37,8 +37,9 @@ def build_presence(snapshot: MediaSnapshot, now: float, artwork: Any = None) -> 
         payload.update(
             large_image=artwork.url,
             large_text=discord_text(track.album or track.title),
-            buttons=[{"label": "Listen on Apple Music", "url": artwork.track_url}],
         )
+        if artwork.track_url:
+            payload["buttons"] = [{"label": "Listen on Apple Music", "url": artwork.track_url}]
     return payload
 
 

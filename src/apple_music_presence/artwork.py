@@ -2,7 +2,9 @@
 
 Calling ``resolve`` sends the supplied metadata to Apple's iTunes Search API.
 The caller must obtain opt-in before constructing/using this provider. Results
-contain remote URLs, never downloaded artwork. The API documents a limit of
+contain remote URLs. Public covers are fetched in memory only when comparing
+ambiguous exact catalog matches; local music and artwork are never uploaded.
+The API documents a limit of
 approximately 20 calls/minute: https://performance-partners.apple.com/search-api
 """
 
@@ -11,10 +13,12 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import re
 from time import monotonic
+import threading
 import unicodedata
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -24,12 +28,18 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_RESPONSE_BYTES = 512 * 1024
 _MIN_REQUEST_INTERVAL = 3.2
 _FAILURE_CACHE_SECONDS = 10.0
+_MAX_COVER_BYTES = 2 * 1024 * 1024
+_MAX_COVER_CANDIDATES = 4
 ARTWORK_SIZE = 1024
 
 
 @dataclass(frozen=True)
 class Artwork:
-    """Verified public artwork and the matching Apple store page."""
+    """Verified public artwork and its Apple store page, when unambiguous.
+
+    An empty track_url means exact releases share this static cover, without
+    selecting a particular album ID, link, or motion artwork.
+    """
 
     url: str
     track_url: str
@@ -115,9 +125,9 @@ def _fetch_json(url: str, timeout: float) -> object:
     return json.loads(data.decode("utf-8"))
 
 
-def _match(payload: object, key: tuple[str, str, str]) -> Artwork | None:
+def _song_candidates(payload: object, key: tuple[str, str, str]) -> set[Artwork]:
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        return None
+        return set()
     matches: set[Artwork] = set()
     for result in payload["results"]:
         if not isinstance(result, dict) or result.get("kind") != "song":
@@ -131,13 +141,12 @@ def _match(payload: object, key: tuple[str, str, str]) -> Artwork | None:
         track_url = _safe_url(result.get("trackViewUrl"), artwork=False)
         if url and track_url:
             matches.add(Artwork(url=url, track_url=track_url))
-    # If exact metadata still identifies multiple recordings, show no art.
-    return next(iter(matches)) if len(matches) == 1 else None
+    return matches
 
 
-def _match_album(payload: object, key: tuple[str, str, str]) -> Artwork | None:
+def _album_candidates(payload: object, key: tuple[str, str, str]) -> set[Artwork]:
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-        return None
+        return set()
     matches = set()
     for result in payload["results"]:
         if not isinstance(result, dict) or result.get("collectionType") != "Album":
@@ -151,7 +160,174 @@ def _match_album(payload: object, key: tuple[str, str, str]) -> Artwork | None:
         page = _safe_url(result.get("collectionViewUrl"), artwork=False)
         if url and page:
             matches.add(Artwork(url, page))
-    return next(iter(matches)) if len(matches) == 1 else None
+    return matches
+
+
+def _known_match(matches: set[Artwork]) -> Artwork | None:
+    if len(matches) == 1:
+        return next(iter(matches))
+    if 1 < len(matches) <= _MAX_COVER_CANDIDATES:
+        urls = {match.url for match in matches}
+        if len(urls) == 1:
+            # The cover is certain, but no particular release/link is chosen.
+            return Artwork(next(iter(urls)), "")
+    return None
+
+
+def _match(payload: object, key: tuple[str, str, str]) -> Artwork | None:
+    return _known_match(_song_candidates(payload, key))
+
+
+def _match_album(payload: object, key: tuple[str, str, str]) -> Artwork | None:
+    return _known_match(_album_candidates(payload, key))
+
+
+def _normalize_exif_comment(exif: bytes) -> bytes | None:
+    """Ignore only a validated UserComment in a narrow, known TIFF layout.
+
+    Preserve color space, orientation, dimensions, and every other byte. Unknown
+    tags/IFDs and overlapping offsets fail closed; no image decoder is invoked.
+    """
+    tiff = bytearray(exif[6:])
+    if not exif.startswith(b"Exif\0\0") or len(tiff) < 8 or tiff[:2] not in (b"MM", b"II"):
+        return None
+    endian = "big" if tiff[:2] == b"MM" else "little"
+
+    def number(offset, size):
+        if offset < 0 or offset + size > len(tiff):
+            raise ValueError("Invalid TIFF offset")
+        return int.from_bytes(tiff[offset:offset + size], endian)
+
+    regions = [(0, 8)]
+    comments = []
+
+    def reserve(offset, size):
+        if offset < 8 or size <= 0 or offset + size > len(tiff):
+            raise ValueError("Invalid TIFF region")
+        if any(offset < end and start < offset + size for start, end in regions):
+            raise ValueError("Overlapping TIFF regions")
+        regions.append((offset, offset + size))
+
+    def directory(offset, *, root):
+        count = number(offset, 2)
+        if not 1 <= count <= 16:
+            raise ValueError("Unknown TIFF directory")
+        reserve(offset, 2 + 12 * count + 4)
+        if number(offset + 2 + 12 * count, 4):
+            raise ValueError("Additional TIFF directories are unsupported")
+        tags, child = set(), None
+        for index in range(count):
+            entry = offset + 2 + 12 * index
+            tag, kind, length = number(entry, 2), number(entry + 2, 2), number(entry + 4, 4)
+            if tag in tags:
+                raise ValueError("Duplicate TIFF tag")
+            tags.add(tag)
+            if root and tag == 34665 and kind == 4 and length == 1:
+                child = number(entry + 8, 4)
+            elif root and tag == 274 and kind == 3 and length == 1:
+                if not 1 <= number(entry + 8, 2) <= 8:
+                    raise ValueError("Invalid EXIF orientation")
+            elif not root and tag == 37510 and kind == 7 and 8 <= length <= 4096:
+                start = number(entry + 8, 4)
+                reserve(start, length)
+                comments.append((start, length))
+            elif not root and tag == 40961 and kind == 3 and length == 1:
+                pass  # ColorSpace remains byte-exact.
+            elif not root and tag in (40962, 40963) and kind in (3, 4) and length == 1:
+                pass  # ExifImageWidth/Height remain byte-exact.
+            else:
+                raise ValueError("Unknown EXIF tag or layout")
+        if root and child is not None:
+            directory(child, root=False)
+
+    try:
+        if number(2, 2) != 42:
+            return None
+        directory(number(4, 4), root=True)
+        if len(comments) != 1:
+            return None
+        for start, length in comments:
+            tiff[start:start + length] = b"\0" * length
+        return exif[:6] + tiff
+    except ValueError:
+        return None
+
+
+def _jpeg_display_fingerprint(content: bytes) -> bytes | None:
+    if len(content) > _MAX_COVER_BYTES or not content.startswith(b"\xff\xd8") or not content.endswith(b"\xff\xd9"):
+        return None
+    normalized = bytearray(content)
+    offset, frame, exif_seen = 2, False, False
+    while offset + 4 <= len(content):
+        if content[offset] != 255:
+            return None
+        marker = content[offset + 1]
+        size = int.from_bytes(content[offset + 2:offset + 4], "big")
+        end = offset + 2 + size
+        if size < 2 or end > len(content):
+            return None
+        payload = content[offset + 4:end]
+        if marker == 225 and payload.startswith(b"Exif\0\0"):
+            if exif_seen:
+                return None
+            exif_seen = True
+            exif = _normalize_exif_comment(payload)
+            if exif is None:
+                return None
+            normalized[offset + 4:end] = exif
+        elif marker in (192, 194):
+            if (len(payload) < 6 or not 1 <= payload[5] <= 4
+                    or size != 8 + 3 * payload[5]
+                    or not 0 < int.from_bytes(payload[1:3], "big") <= 4096
+                    or not 0 < int.from_bytes(payload[3:5], "big") <= 4096):
+                return None
+            frame = True
+        elif marker == 218:
+            if not frame or end >= len(content) - 2:
+                return None
+            # Keep every byte of image data and later segments unchanged.
+            return hashlib.sha256(normalized).digest()
+        elif marker not in {196, 219, 221, 254, *range(224, 240)}:
+            return None
+        offset = end
+    return None
+
+
+def _fetch_cover(url: str, timeout: float, stop: threading.Event) -> bytes:
+    if not _safe_url(url, artwork=True) or urlsplit(url).query or urlsplit(url).fragment:
+        raise ValueError("Cover comparison requires a public Apple CDN URL")
+    deadline = monotonic() + timeout
+    request = Request(url, headers={"Accept": "image/jpeg", "User-Agent": "AppleMusicPresence-MVP/0.1"})
+    if stop.is_set():
+        raise ValueError("Cover comparison cancelled")
+    with build_opener(_NoCatalogRedirect()).open(request, timeout=timeout) as response:
+        content = bytearray()
+        while True:
+            if stop.is_set():
+                raise ValueError("Cover comparison cancelled")
+            if monotonic() >= deadline:
+                raise TimeoutError("Cover comparison timed out")
+            chunk = response.read1(min(64 * 1024, _MAX_COVER_BYTES + 1 - len(content)))
+            if not chunk:
+                return bytes(content)
+            content.extend(chunk)
+            if len(content) > _MAX_COVER_BYTES:
+                raise ValueError("Cover comparison exceeded the image size limit")
+
+
+def _shared_cover(matches: set[Artwork], timeout: float, stop: threading.Event) -> Artwork | None:
+    urls = sorted({match.url for match in matches})
+    if not 1 < len(matches) <= _MAX_COVER_CANDIDATES or not 1 < len(urls) <= _MAX_COVER_CANDIDATES:
+        return None
+    fingerprint = None
+    for url in urls:
+        if stop.is_set():
+            return None
+        image = _jpeg_display_fingerprint(_fetch_cover(url, min(timeout, 5.0), stop))
+        if image is None or (fingerprint is not None and image != fingerprint):
+            return None
+        fingerprint = image
+    return Artwork(urls[0], "")
 
 
 class ItunesArtworkResolver:
@@ -190,7 +366,7 @@ class ItunesArtworkResolver:
         key = tuple(_normalize(value) for value in metadata)
         if not all(key):
             return None
-        return await self._lookup(metadata, key, "song", _match)
+        return await self._lookup(metadata, key, "song", _song_candidates)
 
     async def resolve_album(self, artist: str, album: str) -> Artwork | None:
         """Album artwork is shared across tracks, with exact artist/edition matching."""
@@ -200,9 +376,9 @@ class ItunesArtworkResolver:
         normalized = tuple(_normalize(value) for value in metadata)
         if not all(normalized):
             return None
-        return await self._lookup(metadata, ("", *normalized), "album", _match_album)
+        return await self._lookup(metadata, ("", *normalized), "album", _album_candidates)
 
-    async def _lookup(self, metadata, key, entity, match):
+    async def _lookup(self, metadata, key, entity, candidates):
         async with self._lock:
             now = monotonic()
             cached = self._cache.get(key)
@@ -228,7 +404,15 @@ class ItunesArtworkResolver:
                 payload = await asyncio.to_thread(
                     _fetch_json, f"https://itunes.apple.com/search?{query}", self.timeout
                 )
-                result = match(payload, key)
+                matches = candidates(payload, key)
+                result = _known_match(matches)
+                if result is None and 1 < len(matches) <= _MAX_COVER_CANDIDATES:
+                    stop = threading.Event()
+                    try:
+                        result = await asyncio.to_thread(_shared_cover, matches, self.timeout, stop)
+                    except asyncio.CancelledError:
+                        stop.set()
+                        raise
                 ttl = 24 * 60 * 60 if result else 10 * 60
             except (OSError, ValueError, TypeError) as error:
                 # Deliberately avoid logging the query or listener metadata.

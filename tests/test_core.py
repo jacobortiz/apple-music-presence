@@ -12,6 +12,14 @@ def snapshot(state=PlaybackState.PLAYING, position=10, observed_at=1000):
 
 
 class PresenceTests(unittest.TestCase):
+    def test_shared_cover_without_verified_release_omits_listen_button(self):
+        from apple_music_presence.artwork import Artwork
+        cover = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "")
+        payload = build_presence(snapshot(), 1000, cover)
+        self.assertEqual(payload["large_image"], cover.url)
+        self.assertEqual(payload["large_text"], "Album")
+        self.assertNotIn("buttons", payload)
+
     def test_progress_advances_only_when_playing_and_clamps(self):
         self.assertEqual(snapshot().position_at(1010), 20)
         self.assertEqual(snapshot(PlaybackState.PAUSED).position_at(1010), 10)

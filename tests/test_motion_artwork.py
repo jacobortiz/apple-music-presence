@@ -156,6 +156,19 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
     async def finish_job(self):
         await asyncio.gather(*list(self.resolver._jobs.values()))
 
+    async def test_shared_static_cover_does_not_choose_a_motion_release(self):
+        shared = Artwork(STATIC.url, "")
+        self.catalog.resolve_album.return_value = shared
+        with patch("apple_music_presence.motion_artwork.discover_motion") as discover:
+            with patch.object(self.host, "publish") as publish:
+                self.assertEqual(await self.resolver.resolve("Song", "Artist", "Album"), shared)
+                self.assertEqual(await self.resolver.resolve("Next", "Artist", "Album"), shared)
+                self.assertEqual(await self.resolver.refresh("Song", "Artist", "Album"), shared)
+                self.assertFalse(self.resolver._jobs)
+                self.catalog.resolve_album.assert_awaited_once()
+                discover.assert_not_called()
+                publish.assert_not_called()
+
     async def test_static_is_immediate_then_motion_upgrades_same_song_and_persists(self):
         gate = asyncio.Event()
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Recover normal artwork for duplicate catalog releases with identical covers, including After Hours (Deluxe), without choosing an uncertain album link or animation.
 - Sharpen normal covers to 1024×1024 and motion covers to 768×768 at higher quality; refresh older cached animations with new URLs.
 - Show the current artist in the member list while retaining the Apple Music profile heading.
 - Prefer motion covers, with public Apple Music page fallback and album caching across guest artists.

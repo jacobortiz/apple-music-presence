@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 from apple_music_presence.apple_catalog import AppleMusicArtworkResolver, _album_tracks, _candidate_pages
+from apple_music_presence.artwork import Artwork, ItunesArtworkResolver
 
 PAGE = "https://music.apple.com/us/album/data/123"
 ART = "https://is1-ssl.mzstatic.com/image/cover/{w}x{h}bb.{f}"
@@ -53,6 +54,24 @@ class ApplePageTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.resolver, "_page", new_callable=AsyncMock) as fetch:
             self.assertEqual(await self.resolver.resolve("First", "Tainy", "DATA"), "cover fixture")
             fetch.assert_not_awaited()
+
+    async def test_cached_page_miss_does_not_hide_catalog_recovery(self):
+        resolver = AppleMusicArtworkResolver(ItunesArtworkResolver())
+        art_url = ART.replace("{w}", "1024").replace("{h}", "1024").replace("{f}", "jpg")
+        result = {"kind": "song", "trackName": "First", "artistName": "Tainy & Guest",
+                  "collectionName": "DATA", "artworkUrl100": art_url, "trackViewUrl": PAGE + "?i=456"}
+        with patch("apple_music_presence.artwork.monotonic", return_value=100) as clock:
+            with patch("apple_music_presence.artwork._fetch_json", side_effect=[TimeoutError(), {"results": [result]}]) as catalog:
+                with patch.object(resolver, "_page", new_callable=AsyncMock, return_value=html([])) as fetch:
+                    self.assertIsNone(await resolver.resolve("First", "Tainy & Guest", "DATA"))
+                    clock.return_value = 109
+                    self.assertIsNone(await resolver.resolve("First", "Tainy & Guest", "DATA"))
+                    catalog.assert_called_once()
+                    clock.return_value = 110
+                    self.assertEqual(await resolver.resolve("First", "Tainy & Guest", "DATA"),
+                                     Artwork(art_url, PAGE + "?i=456"))
+                    self.assertEqual(catalog.call_count, 2)
+                    fetch.assert_awaited_once()
 
     async def test_wrong_artist_album_edition_or_recommendation_is_rejected(self):
         for album in (html([header(), song(artist="Other")]),

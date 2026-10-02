@@ -161,9 +161,11 @@ class AppleMusicArtworkResolver:
         if not all(key):
             return None
         cached = self._tracks.get(key)
-        if cached and cached.expires > monotonic():
+        if cached and cached.cover and cached.expires > monotonic():
             self._tracks.move_to_end(key)
             return cached.cover
+        # A cached page miss must not hide a recovered catalog/CDN lookup.
+        # The catalog maintains its own request limits and failure cache.
         cover = await self.catalog.resolve(*metadata)
         if cover:
             return cover

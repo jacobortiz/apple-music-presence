@@ -61,7 +61,7 @@ URLs must be public HTTPS with no query or fragment; images must end in `.webp`,
 ## Troubleshooting and privacy
 
 - Detection polls every second; changed activities are sent at most every five seconds. Discord may take longer to display them.
-- Artwork uses exact Apple catalog matches, with public Music pages as fallback. Missing tags, ambiguous results, network failures, and Apple page changes can prevent artwork. Failed lookups retry during playback.
+- Artwork uses exact Apple catalog matches, with public Music pages as fallback. Duplicate releases can share verified identical normal covers; an uncertain release omits the album link and animation. Missing tags, different covers, network failures, and Apple page changes can prevent artwork. Failed lookups retry during playback.
 - No timeline means no progress bar. Discord controls animation playback and button visibility; check buttons from another account.
 - Use `--demo` for an offline preview, `--diagnose` to inspect local media metadata, or `--verbose` for troubleshooting. `--source-id` selects an exact media session if needed. Run one instance per Application ID.
 - Artwork opt-in sends song metadata to Apple's public services. Motion opt-in uploads public cover images to GitHub. No local music, browser cookies, Apple passwords, Discord tokens, or telemetry are collected.
