@@ -165,12 +165,16 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(
             self.client.update(
                 activity_type=2,
-                name="An artist",
+                name="Apple Music",
+                status_display_type=1,
                 details="A song 🎵",
-                state="Artist • Album",
+                state="An artist",
                 start=1700000000,
                 end=1700000123,
                 large_image="https://example.org/cover.jpg",
+                large_text="An album",
+                small_image="https://example.org/apple-music.jpg",
+                small_text="Apple Music",
             )
         )
         await asyncio.sleep(0)
@@ -181,11 +185,15 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(sent[8:])
         activity = payload["args"]["activity"]
         self.assertEqual(activity["type"], 2)
-        self.assertEqual(activity["name"], "An artist")
-        self.assertEqual(activity["status_display_type"], 0)
+        self.assertEqual(activity["name"], "Apple Music")
+        self.assertEqual(activity["state"], "An artist")
+        self.assertEqual(activity["status_display_type"], 1)
         self.assertEqual(activity["details"], "A song 🎵")
         self.assertEqual(activity["timestamps"], {"start": 1700000000, "end": 1700000123})
         self.assertEqual(activity["assets"]["large_image"], "https://example.org/cover.jpg")
+        self.assertEqual(activity["assets"]["large_text"], "An album")
+        self.assertEqual(activity["assets"]["small_image"], "https://example.org/apple-music.jpg")
+        self.assertEqual(activity["assets"]["small_text"], "Apple Music")
         self.client.sock_reader.feed_data(frame({"nonce": payload["nonce"], "evt": None}))
         await task
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from apple_music_presence.models import MediaSnapshot, PlaybackState, Track
-from apple_music_presence.presence import build_presence, materially_changed
+from apple_music_presence.presence import APPLE_MUSIC_ICON, build_presence, materially_changed
 from apple_music_presence.service import PresenceService
 
 
@@ -27,20 +27,26 @@ class PresenceTests(unittest.TestCase):
     def test_pause_clears_and_track_fields_and_timestamps(self):
         self.assertIsNone(build_presence(snapshot(PlaybackState.PAUSED), 1000))
         payload = build_presence(snapshot(), 1000)
-        self.assertEqual(payload["name"], "Artist")
+        self.assertEqual(payload["name"], "Apple Music")
+        self.assertEqual(payload["status_display_type"], 1)
         self.assertEqual(payload["details"], "Song")
         self.assertIn("Artist", payload["state"])
-        self.assertIn("Album", payload["state"])
+        self.assertEqual(payload["state"], "Artist")
+        self.assertEqual(payload["small_image"], APPLE_MUSIC_ICON)
+        self.assertEqual(payload["small_text"], "Apple Music")
         self.assertEqual((payload["start"], payload["end"]), (990, 1190))
 
-    def test_activity_name_uses_only_artist_with_safe_missing_metadata_fallback(self):
+    def test_member_list_uses_only_artist_while_profile_retains_app_name(self):
         for artist, expected in (("  The   Weeknd\n", "The Weeknd"),
                                  (" \t", "Apple Music"),
                                  ("X", "X\u200b"),
                                  ("A" * 200, "A" * 128)):
             with self.subTest(artist=artist):
                 media = MediaSnapshot(Track("Song", artist, "Album"), PlaybackState.PLAYING)
-                self.assertEqual(build_presence(media, 1000)["name"], expected)
+                payload = build_presence(media, 1000)
+                self.assertEqual(payload["name"], "Apple Music")
+                self.assertEqual(payload["state"], expected)
+                self.assertEqual(payload["status_display_type"], 1)
 
     def test_timer_jitter_does_not_flood_but_seek_does_update(self):
         old = build_presence(snapshot(), 1000)
@@ -200,13 +206,15 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_at, [100, 105, 110, 115, 120])
         self.assertEqual(self.rpc.calls[-1]["details"], "Song 20")
 
-    async def test_artist_change_updates_activity_name_after_rate_limit(self):
+    async def test_artist_change_updates_member_status_after_rate_limit(self):
         await self.service.tick()
         self.backend.value = MediaSnapshot(Track("Song", "Another artist", "Album"),
                                            PlaybackState.PLAYING, 10, 200, 1000)
         self.clock_value += 5
         await self.service.tick()
-        self.assertEqual(self.rpc.calls[-1]["name"], "Another artist")
+        self.assertEqual(self.rpc.calls[-1]["name"], "Apple Music")
+        self.assertEqual(self.rpc.calls[-1]["state"], "Another artist")
+        self.assertEqual(self.rpc.calls[-1]["status_display_type"], 1)
         self.assertEqual(self.rpc.calls[-1]["details"], "Song")
 
     async def test_update_failure_backoff_increases_despite_successful_handshakes(self):
