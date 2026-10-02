@@ -92,7 +92,7 @@ class AlbumArtworkTests(unittest.IsolatedAsyncioTestCase):
         payload = build_presence(MediaSnapshot(Track("Blinding Lights", "The Weeknd", "After Hours"),
                                               PlaybackState.PLAYING), 1000, cover)
         self.assertEqual(payload["large_image"],
-            "https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours.webp")
+            "https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours-hq.webp")
         self.assertEqual(payload["buttons"][0]["url"],
             "https://music.apple.com/us/album/after-hours/1499378108")
 

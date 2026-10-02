@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +11,7 @@ from urllib.error import HTTPError
 from apple_music_presence.artwork import Artwork
 from apple_music_presence.config import Settings, load_settings, save_settings
 from apple_music_presence.motion_artwork import (
-    AutomaticArtworkResolver, GithubArtworkHost, album_page, animated_webp,
+    AutomaticArtworkResolver, ENCODING_PROFILE, GithubArtworkHost, album_page, animated_webp,
     download_video, find_motion,
 )
 
@@ -83,6 +84,39 @@ class MotionFormatTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cancelled"):
                     download_video(STREAM, Path(folder), stop)
                 fetch.assert_called_once()
+
+    def test_motion_uses_source_with_enough_pixels_and_retries_smaller_on_size_only(self):
+        master = ('#EXTM3U\n'
+                  '#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=408x408\n408.m3u8\n'
+                  '#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=720x720\n720.m3u8\n'
+                  '#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=1080x1080\n1080.m3u8\n'
+                  '#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=1920x1920\n1920.m3u8\n')
+        variant = '#EXTM3U\n#EXTINF:4,\nclip.mp4\n#EXT-X-ENDLIST\n'
+        base = STREAM.rsplit("/", 1)[0] + "/"
+        requests = []
+
+        def fetch(url, limit):
+            requests.append(url)
+            if url == STREAM:
+                return master.encode()
+            if url == base + "1080.m3u8":
+                raise ValueError("Artwork response exceeded size limit")
+            if url == base + "720.m3u8":
+                return variant.encode()
+            return b"media"
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("apple_music_presence.motion_artwork._download", side_effect=fetch):
+                download_video(STREAM, Path(folder))
+        self.assertEqual(requests, [STREAM, base + "1080.m3u8", base + "720.m3u8", base + "clip.mp4"])
+
+        # A format or security rejection must never retry a different source.
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("apple_music_presence.motion_artwork._download", side_effect=[
+                    master.encode(), b'#EXTINF:4,\nhttps://evil.test/clip.mp4\n#EXT-X-ENDLIST']) as download:
+                with self.assertRaises(ValueError):
+                    download_video(STREAM, Path(folder))
+                self.assertEqual(download.call_count, 2)
 
     def test_hls_foreign_host_encryption_and_long_loops_are_rejected(self):
         master = '#EXTM3U\n#EXT-X-STREAM-INF:CODECS="avc1.64001f",RESOLUTION=408x408\nvariant.m3u8\n'
@@ -188,13 +222,36 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_artist_cache_migrates_by_album_id_without_upload(self):
         import time
-        self.cache.write_text(json.dumps({"repository": "owner/repo", "albums": {
+        self.cache.write_text(json.dumps({"repository": "owner/repo", "encoding_profile": ENCODING_PROFILE, "albums": {
             self.resolver._key("Original Artist", "Album"): {"cover": {"url": PUBLIC, "track_url": PAGE},
                                                               "expires": time.time() + 86400}}}))
         restarted = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
         try:
             cover = await restarted.resolve("Song", "Other Guest", "Album")
             self.assertTrue(cover.animated)
+            self.assertFalse(restarted._jobs)
+        finally:
+            await restarted.close()
+
+    async def test_previous_quality_covers_upgrade_without_invalidating_no_motion_cache(self):
+        import time
+        self.cache.write_text(json.dumps({"repository": "owner/repo", "encoding_profile": "legacy-384", "albums": {
+            "album:us:123": {"cover": {"url": PUBLIC, "track_url": PAGE}, "expires": time.time() + 86400},
+            "album:us:999": {"cover": None, "expires": time.time() + 86400}}}))
+        restarted = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
+        try:
+            self.assertNotIn("album:us:123", restarted._cache)
+            self.assertIn("album:us:999", restarted._cache)
+            with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM):
+                with patch("apple_music_presence.motion_artwork.convert_motion", new_callable=AsyncMock, return_value=b"bytes"):
+                    with patch.object(self.host, "publish", return_value=PUBLIC) as publish:
+                        self.assertFalse((await restarted.resolve("Song", "Artist", "Album")).animated)
+                        await asyncio.gather(*list(restarted._jobs.values()))
+                        self.assertTrue((await restarted.refresh("Song", "Artist", "Album")).animated)
+                        publish.assert_called_once()
+            self.assertEqual(json.loads(self.cache.read_text())["encoding_profile"], ENCODING_PROFILE)
+            self.catalog.resolve_album.return_value = Artwork(STATIC.url, "https://music.apple.com/us/album/album/999")
+            self.assertFalse((await restarted.resolve("Other", "Other Artist", "Other Album")).animated)
             self.assertFalse(restarted._jobs)
         finally:
             await restarted.close()
@@ -260,7 +317,7 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
     async def test_cached_album_buttons_cannot_share_a_saved_query_token(self):
         import time
         key = self.resolver._key("Artist", "Album")
-        self.cache.write_text(json.dumps({"repository": "owner/repo", "albums": {key: {
+        self.cache.write_text(json.dumps({"repository": "owner/repo", "encoding_profile": ENCODING_PROFILE, "albums": {key: {
             "cover": {"url": PUBLIC, "track_url": PAGE + "?token=secret-fixture"},
             "expires": time.time() + 1000}}}))
         resolver = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
@@ -284,6 +341,8 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret-fixture", repr(kwargs["env"]))
             self.assertIn("-map_metadata", args)
             self.assertEqual(args[args.index("-map_metadata") + 1], "-1")
+            self.assertEqual(args[args.index("-quality") + 1], "85")
+            self.assertEqual(args[args.index("-vf") + 1], "fps=15,scale=768:768:flags=lanczos,setpts=PTS-STARTPTS")
             Path(args[-1]).write_bytes(content)
             return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
 
@@ -293,6 +352,55 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
                 with patch("apple_music_presence.motion_artwork.asyncio.create_subprocess_exec", side_effect=spawn):
                     with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"):
                         self.assertEqual(await convert_motion(STREAM), content)
+
+    async def test_oversized_conversion_preserves_pixels_before_reducing_resolution(self):
+        from types import SimpleNamespace
+        from apple_music_presence.motion_artwork import convert_motion, MAX_IMAGE_BYTES
+        content = (Path(__file__).resolve().parents[1] / "artwork" / "after-hours.webp").read_bytes()
+        filters = []
+
+        def video(stream, directory, stop):
+            path = directory / "motion.m3u8"
+            path.write_text("local fixture")
+            return path
+
+        async def spawn(*args, **kwargs):
+            filters.append(args[args.index("-vf") + 1])
+            self.assertEqual(args[args.index("-quality") + 1], "85")
+            Path(args[-1]).write_bytes(b"x" * (MAX_IMAGE_BYTES + 1) if len(filters) < 3 else content)
+            return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
+
+        with patch("apple_music_presence.motion_artwork.download_video", side_effect=video):
+            with patch("apple_music_presence.motion_artwork.asyncio.create_subprocess_exec", side_effect=spawn):
+                with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"):
+                    self.assertEqual(await convert_motion(STREAM), content)
+        self.assertEqual(filters, ["fps=15,scale=768:768:flags=lanczos,setpts=PTS-STARTPTS",
+                                  "fps=10,scale=768:768:flags=lanczos,setpts=PTS-STARTPTS",
+                                  "fps=10,scale=512:512:flags=lanczos,setpts=PTS-STARTPTS"])
+
+    async def test_encoding_retries_share_one_timeout_budget(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from apple_music_presence.motion_artwork import convert_motion, MAX_IMAGE_BYTES
+
+        def video(stream, directory, stop):
+            path = directory / "motion.m3u8"
+            path.write_text("local fixture")
+            return path
+
+        async def spawn(*args, **kwargs):
+            Path(args[-1]).write_bytes(b"x" * (MAX_IMAGE_BYTES + 1))
+            return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
+
+        clock = Mock()
+        clock.monotonic.side_effect = [100, 100, 150, 161]
+        with patch("apple_music_presence.motion_artwork.download_video", side_effect=video):
+            with patch("apple_music_presence.motion_artwork.time", clock):
+                with patch("apple_music_presence.motion_artwork.asyncio.create_subprocess_exec", side_effect=spawn) as encoder:
+                    with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"):
+                        with self.assertRaises(TimeoutError):
+                            await convert_motion(STREAM)
+                        encoder.assert_awaited_once()
 
 
 class MotionHostingTests(unittest.TestCase):
@@ -352,6 +460,9 @@ class MotionHostingTests(unittest.TestCase):
             with patch("apple_music_presence.motion_artwork._download", side_effect=request):
                 url = GithubArtworkHost("owner/repo").publish("123", STREAM, content)
         self.assertIn("/" + "a" * 40 + "/artwork/motion/123-", url)
+        expected = hashlib.sha256(f"{ENCODING_PROFILE}\0{STREAM}".encode()).hexdigest()[:12]
+        self.assertTrue(url.endswith(f"123-{expected}.webp"))
+        self.assertNotEqual(expected, hashlib.sha256(STREAM.encode()).hexdigest()[:12])
         self.assertEqual(sum(call[1].get("method") == "PUT" for call in calls), 1)
 
     def test_private_host_and_invalid_image_are_rejected(self):

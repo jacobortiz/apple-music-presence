@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Sharpen normal covers to 1024×1024 and motion covers to 768×768 at higher quality; refresh older cached animations with new URLs.
 - Show the current artist in the member list while retaining the Apple Music profile heading.
 - Prefer motion covers, with public Apple Music page fallback and album caching across guest artists.
 - Reduce changed-activity updates to a five-second interval and retry missing artwork during playback.

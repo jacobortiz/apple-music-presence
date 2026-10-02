@@ -39,7 +39,7 @@ class ApplePageTests(unittest.IsolatedAsyncioTestCase):
         album = html([header(), song(), song("Second", "Tainy & Another")])
         with patch.object(self.resolver, "_page", new_callable=AsyncMock, side_effect=[search, album]) as fetch:
             first = await self.resolver.resolve("First", "Tainy & Guest", "DATA")
-            self.assertEqual(first.url, ART.replace("{w}", "300").replace("{h}", "300").replace("{f}", "jpg"))
+            self.assertEqual(first.url, ART.replace("{w}", "1024").replace("{h}", "1024").replace("{f}", "jpg"))
             second = await self.resolver.resolve("Second", "Tainy & Another", "DATA")
             self.assertEqual(first, second)
             self.assertEqual(fetch.await_count, 2)

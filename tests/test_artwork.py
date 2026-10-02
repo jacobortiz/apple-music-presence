@@ -5,10 +5,11 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
-from apple_music_presence.artwork import Artwork, ItunesArtworkResolver
+from apple_music_presence.artwork import Artwork, ItunesArtworkResolver, _full_size_artwork
 
 
-ART_URL = "https://is1-ssl.mzstatic.com/image/thumb/example/100x100bb.jpg"
+THUMB_URL = "https://is1-ssl.mzstatic.com/image/thumb/example/100x100bb.jpg"
+ART_URL = "https://is1-ssl.mzstatic.com/image/thumb/example/1024x1024bb.jpg"
 TRACK_URL = "https://music.apple.com/us/album/song/123?i=456"
 
 
@@ -18,7 +19,7 @@ def catalog_result(**changes):
         "trackName": "Song",
         "artistName": "Artist",
         "collectionName": "Album",
-        "artworkUrl100": ART_URL,
+        "artworkUrl100": THUMB_URL,
         "trackViewUrl": TRACK_URL,
     }
     result.update(changes)
@@ -26,6 +27,27 @@ def catalog_result(**changes):
 
 
 class ArtworkTests(unittest.IsolatedAsyncioTestCase):
+    def test_thumbnail_upgrade_preserves_asset_and_removes_low_quality_suffix(self):
+        for suffix in ("100x100bb.jpg", "100x100bb-75.jpg", "60x60bb.jpg"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(_full_size_artwork(THUMB_URL.rsplit("/", 1)[0] + "/" + suffix), ART_URL)
+        png = THUMB_URL.replace(".jpg", ".png")
+        self.assertEqual(_full_size_artwork(png), ART_URL.replace(".jpg", ".png"))
+
+    def test_thumbnail_upgrade_leaves_unrecognized_and_larger_urls_unchanged(self):
+        for url in (THUMB_URL.replace("/image/thumb/", "/image/"),
+                    THUMB_URL.replace("100x100bb", "1400x1400bb"),
+                    THUMB_URL.replace("100x100bb", "100x200bb"),
+                    THUMB_URL.replace("100x100bb", "original"),
+                    THUMB_URL.replace("is1-ssl.mzstatic.com", "mvod.itunes.apple.com"),
+                    THUMB_URL + "?version=1", THUMB_URL + "#cover"):
+            with self.subTest(url=url):
+                self.assertEqual(_full_size_artwork(url), url)
+        for url in (THUMB_URL.replace("https:", "http:"),
+                    THUMB_URL.replace("mzstatic.com", "mzstatic.com.attacker.test"),
+                    THUMB_URL.replace("https://", "https://user:password@"), None):
+            self.assertIsNone(_full_size_artwork(url))
+
     def test_catalog_downloads_reject_other_destinations_and_redirects(self):
         from apple_music_presence.artwork import _fetch_json, _NoCatalogRedirect
         from urllib.request import Request
@@ -41,9 +63,10 @@ class ArtworkTests(unittest.IsolatedAsyncioTestCase):
     async def test_album_lookup_reuses_cover_across_songs_and_preserves_editions(self):
         resolver = ItunesArtworkResolver()
         result = {"collectionType": "Album", "artistName": "Artist", "collectionName": "Album",
-                  "artworkUrl100": ART_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
+                  "artworkUrl100": THUMB_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
         with patch("apple_music_presence.artwork._fetch_json", return_value={"results": [result]}) as fetch:
             first = await resolver.resolve_album("Artist", "Album")
+            self.assertEqual(first.url, ART_URL)
             self.assertEqual(first, await resolver.resolve_album("ARTIST", " Album "))
             fetch.assert_called_once()
             self.assertEqual(parse_qs(urlsplit(fetch.call_args.args[0]).query)["entity"], ["album"])
@@ -51,7 +74,7 @@ class ArtworkTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_album_lookup_omits_ambiguous_art_and_wrong_artists(self):
         result = {"collectionType": "Album", "artistName": "Artist", "collectionName": "Album",
-                  "artworkUrl100": ART_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
+                  "artworkUrl100": THUMB_URL, "collectionViewUrl": "https://music.apple.com/us/album/album/123"}
         for results in ([result, {**result, "collectionViewUrl": "https://music.apple.com/us/album/album/999"}],
                         [{**result, "artistName": "Other"}], [{**result, "collectionName": "Album (Live)"}]):
             with patch("apple_music_presence.artwork._fetch_json", return_value={"results": results}):

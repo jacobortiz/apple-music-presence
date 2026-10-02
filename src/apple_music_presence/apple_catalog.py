@@ -14,7 +14,7 @@ from time import monotonic
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit, urljoin, quote
 
-from .artwork import Artwork, _normalize, _safe_url, _MIN_REQUEST_INTERVAL
+from .artwork import Artwork, ARTWORK_SIZE, _normalize, _safe_url, _MIN_REQUEST_INTERVAL
 from .motion_artwork import _Scripts, _download, album_page
 
 log = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ def _album_tracks(html, page, album):
         template = art.get("dictionary", {}).get("url") if isinstance(art, dict) else None
         if not isinstance(template, str) or _identity(header_page) != identity:
             continue
-        url = _safe_url(template.replace("{w}", "300").replace("{h}", "300")
+        url = _safe_url(template.replace("{w}", str(ARTWORK_SIZE)).replace("{h}", str(ARTWORK_SIZE))
                         .replace("{f}", "jpg"), artwork=True)
         if url and "{" not in url and "}" not in url:
             covers.add(Artwork(url, header_page))

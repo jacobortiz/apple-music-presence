@@ -13,9 +13,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import json
 import logging
+import re
 from time import monotonic
 import unicodedata
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 
@@ -23,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_RESPONSE_BYTES = 512 * 1024
 _MIN_REQUEST_INTERVAL = 3.2
 _FAILURE_CACHE_SECONDS = 10.0
+ARTWORK_SIZE = 1024
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,27 @@ def _safe_url(value: object, *, artwork: bool) -> str | None:
     return value if permitted else None
 
 
+def _full_size_artwork(value: object) -> str | None:
+    """Request a larger rendition of recognized Apple CDN thumbnails.
+
+    The Search API returns 100-pixel URLs. Apple's public thumbnail service
+    also serves this same image at larger sizes. Leave unfamiliar URL shapes
+    untouched rather than guessing how to rewrite them.
+    """
+    url = _safe_url(value, artwork=True)
+    if not url:
+        return None
+    parsed = urlsplit(url)
+    if (not parsed.hostname.endswith(".mzstatic.com")
+            or not parsed.path.startswith("/image/thumb/") or parsed.query or parsed.fragment):
+        return url
+    size = re.search(r"/(\d+)x(\d+)bb(?:-\d+)?\.(jpg|jpeg|png)$", parsed.path)
+    if not size or size[1] != size[2] or int(size[1]) >= ARTWORK_SIZE:
+        return url
+    path = parsed.path[:size.start()] + f"/{ARTWORK_SIZE}x{ARTWORK_SIZE}bb.{size[3]}"
+    return urlunsplit(parsed._replace(path=path))
+
+
 class _NoCatalogRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -104,7 +127,7 @@ def _match(payload: object, key: tuple[str, str, str]) -> Artwork | None:
             continue
         if tuple(_normalize(value) for value in values) != key:
             continue
-        url = _safe_url(result.get("artworkUrl100"), artwork=True)
+        url = _full_size_artwork(result.get("artworkUrl100"))
         track_url = _safe_url(result.get("trackViewUrl"), artwork=False)
         if url and track_url:
             matches.add(Artwork(url=url, track_url=track_url))
@@ -124,7 +147,7 @@ def _match_album(payload: object, key: tuple[str, str, str]) -> Artwork | None:
             continue
         if tuple(_normalize(value) for value in values) != key[1:]:
             continue
-        url = _safe_url(result.get("artworkUrl100"), artwork=True)
+        url = _full_size_artwork(result.get("artworkUrl100"))
         page = _safe_url(result.get("collectionViewUrl"), artwork=False)
         if url and page:
             matches.add(Artwork(url, page))

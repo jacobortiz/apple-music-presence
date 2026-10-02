@@ -26,6 +26,10 @@ from .artwork import Artwork, _normalize, _safe_url
 
 log = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# Changing the conversion recipe must also change this profile. The profile is
+# included in cache validation and upload names so Discord fetches a new image.
+ENCODING_PROFILE = "webp-768-q85-lanczos-v2"
+_ENCODING_ATTEMPTS = ((768, 15), (768, 10), (512, 10))
 REPOSITORY_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}"
 
 
@@ -154,13 +158,30 @@ def download_video(stream, directory, stop=None):
     for index, line in enumerate(lines[:-1]):
         if line.startswith("#EXT-X-STREAM-INF:") and 'CODECS="avc1.' in line:
             size = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
-            if size and size[1] == size[2] and int(size[1]) <= 768:
+            if size and size[1] == size[2] and 0 < int(size[1]) <= 1080:
                 url = _apple_stream(urljoin(stream, lines[index + 1].strip()))
                 if url:
-                    choices.append((abs(int(size[1]) - 408), url))
+                    choices.append((int(size[1]), url))
     if not choices:
         raise ValueError("No supported square SDR rendition")
-    variant = min(choices)[1]
+    larger = sorted(choice for choice in choices if choice[0] >= 768)
+    smaller = sorted((choice for choice in choices if choice[0] < 768), reverse=True)
+    # Prefer enough source pixels for the output without downloading 4K video.
+    variants = [larger[0][1] if larger else smaller[0][1]]
+    if larger and smaller:
+        variants.append(smaller[0][1])
+    for index, variant in enumerate(variants):
+        try:
+            return _download_rendition(variant, directory, stop)
+        except ValueError as error:
+            # A higher-resolution source can exceed the existing download cap.
+            # Retry one smaller rendition, keeping all host/format checks strict.
+            if (index == len(variants) - 1 or str(error) not in {
+                    "Artwork response exceeded size limit", "Motion download exceeded size limit"}):
+                raise
+
+
+def _download_rendition(variant, directory, stop):
     if stop and stop.is_set():
         raise ValueError("Motion download cancelled")
     playlist = _download(variant, 128 * 1024).decode("utf-8")
@@ -243,29 +264,36 @@ async def convert_motion(stream):
             await asyncio.gather(download, return_exceptions=True)
             raise
         output = directory / "cover.webp"
-        process = await asyncio.create_subprocess_exec(
-            imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
-            "-protocol_whitelist", "file", "-allowed_extensions", "ALL", "-i", str(local),
-            "-vf", "fps=15,scale=384:384,setpts=PTS-STARTPTS", "-map_metadata", "-1", "-an", "-c:v", "libwebp_anim",
-            "-loop", "0", "-quality", "65", str(output),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            env={key: value for key, value in os.environ.items()
-                 if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP"}},
-            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
-        try:
-            await asyncio.wait_for(process.wait(), 60)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-        if process.returncode != 0:
-            raise ValueError("Motion conversion failed")
-        if output.stat().st_size > MAX_IMAGE_BYTES:
-            raise ValueError("Converted cover exceeds size limit")
-        content = output.read_bytes()
-        if not animated_webp(content):
-            raise ValueError("Converted cover is not animated WebP")
-        return content
+        deadline = time.monotonic() + 60
+        for size, fps in _ENCODING_ATTEMPTS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Motion conversion timed out")
+            process = await asyncio.create_subprocess_exec(
+                imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+                "-protocol_whitelist", "file", "-allowed_extensions", "ALL", "-i", str(local),
+                "-vf", f"fps={fps},scale={size}:{size}:flags=lanczos,setpts=PTS-STARTPTS",
+                "-map_metadata", "-1", "-an", "-c:v", "libwebp_anim",
+                "-loop", "0", "-quality", "85", str(output),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                env={key: value for key, value in os.environ.items()
+                     if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP"}},
+                **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+            try:
+                await asyncio.wait_for(process.wait(), max(0.001, deadline - time.monotonic()))
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            if process.returncode != 0:
+                raise ValueError("Motion conversion failed")
+            if output.stat().st_size > MAX_IMAGE_BYTES:
+                continue
+            content = output.read_bytes()
+            if not animated_webp(content):
+                raise ValueError("Converted cover is not animated WebP")
+            return content
+        raise ValueError("Converted cover exceeds size limit")
 
 
 def github_token(repository):
@@ -332,7 +360,8 @@ class GithubArtworkHost:
                 if conflict.code != 422:
                     raise
                 ref = api(f"/git/ref/heads/{self.branch}")  # Another instance created it.
-        filename = f"{album_id}-{hashlib.sha256(stream.encode()).hexdigest()[:12]}.webp"
+        digest = hashlib.sha256(f"{ENCODING_PROFILE}\0{stream}".encode()).hexdigest()[:12]
+        filename = f"{album_id}-{digest}.webp"
         path = f"artwork/motion/{filename}"
         def public_url(commit):
             return f"https://raw.githubusercontent.com/{self.repository}/{commit}/{path}"
@@ -414,6 +443,8 @@ class AutomaticArtworkResolver:
             for key, item in list(data.get("albums", {}).items())[-128:]:
                 cover = item.get("cover")
                 if cover:
+                    if data.get("encoding_profile") != ENCODING_PROFILE:
+                        continue
                     pattern = (r"https://raw\.githubusercontent\.com/" + re.escape(self.host.repository)
                                + r"/[a-f0-9]{40}/artwork/motion/[0-9]+-[a-f0-9]{12}\.webp")
                     if not re.fullmatch(pattern, cover["url"]) or not album_page(cover["track_url"]):
@@ -429,7 +460,7 @@ class AutomaticArtworkResolver:
             pass
 
     def _save(self):
-        data = {"repository": self.host.repository, "albums": {key: {
+        data = {"repository": self.host.repository, "encoding_profile": ENCODING_PROFILE, "albums": {key: {
             "cover": {"url": item.cover.url, "track_url": item.cover.track_url} if item.cover else None,
             "expires": item.expires} for key, item in self._cache.items()}}
         try:
