@@ -372,6 +372,7 @@ class AutomaticArtworkResolver:
     def __init__(self, catalog, host, cache_path):
         self.catalog, self.host, self.cache_path = catalog, host, Path(cache_path)
         self._cache, self._jobs, self._static = OrderedDict(), {}, {}
+        self._aliases = OrderedDict()
         self._statuses, self._current_key = {}, None
         self._serial = asyncio.Semaphore(1)
         self._load()
@@ -382,6 +383,13 @@ class AutomaticArtworkResolver:
 
     def _key(self, artist, album):
         return hashlib.sha256(f"{_normalize(artist)}\0{_normalize(album)}".encode()).hexdigest()
+
+    def _album_key(self, page):
+        verified = album_page(page)
+        if not verified:
+            return None
+        parts = urlsplit(verified).path.strip("/").split("/")
+        return f"album:{parts[0].lower()}:{parts[-1]}"
 
     def _load(self):
         try:
@@ -398,6 +406,9 @@ class AutomaticArtworkResolver:
                     if not re.fullmatch(pattern, cover["url"]) or not album_page(cover["track_url"]):
                         continue
                     cover = Artwork(cover["url"], album_page(cover["track_url"]), animated=True)
+                    # Migrate older artist-based entries using their verified
+                    # album ID. Different guest artists share the same cover.
+                    key = self._album_key(cover.track_url)
                 expires = float(item["expires"])
                 if time.time() < expires <= time.time() + 8 * 86400:
                     self._cache[key] = _MotionCache(cover, expires)
@@ -459,6 +470,7 @@ class AutomaticArtworkResolver:
 
     async def refresh(self, title, artist, album):
         key = self._key(artist, album)
+        key = self._aliases.get(key, key)
         self._current_key = key
         cached = self._cache.get(key)
         if cached and cached.expires > time.time() and cached.cover:
@@ -475,6 +487,8 @@ class AutomaticArtworkResolver:
         if not artist.strip() or not album.strip():
             return await self.catalog.resolve(title, artist, album)
         key = self._key(artist, album)
+        metadata_key = key
+        key = self._aliases.get(key, key)
         self._current_key = key
         cached = self._cache.get(key)
         if cached and cached.expires > time.time() and cached.cover:
@@ -485,6 +499,13 @@ class AutomaticArtworkResolver:
         if not static:
             static = await self.catalog.resolve(title, artist, album)
         if static:
+            canonical = self._album_key(static.track_url)
+            if canonical:
+                self._aliases[metadata_key] = canonical
+                self._aliases.move_to_end(metadata_key)
+                while len(self._aliases) > 128:
+                    self._aliases.popitem(last=False)
+                key = canonical
             self._static[key] = Artwork(static.url, album_page(static.track_url) or static.track_url)
             while len(self._static) > 128:
                 self._static.pop(next(iter(self._static)))

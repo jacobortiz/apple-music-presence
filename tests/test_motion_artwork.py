@@ -137,6 +137,50 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.resolver._jobs)
             discover.assert_called_once()
 
+    async def test_guest_artists_reuse_one_verified_album_animation(self):
+        with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM) as discover:
+            with patch("apple_music_presence.motion_artwork.convert_motion", new_callable=AsyncMock, return_value=b"bytes"):
+                with patch.object(self.host, "publish", return_value=PUBLIC) as publish:
+                    await self.resolver.resolve("First", "Artist & Guest", "Album")
+                    await self.finish_job()
+                    cover = await self.resolver.resolve("Second", "Artist & Another", "Album")
+                    self.assertTrue(cover.animated)
+                    self.assertEqual(cover.url, PUBLIC)
+                    discover.assert_called_once()
+                    publish.assert_called_once()
+        restarted = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
+        try:
+            self.assertEqual(await restarted.resolve("Third", "Artist & Third", "Album"), cover)
+            self.assertFalse(restarted._jobs)
+        finally:
+            await restarted.close()
+
+    async def test_legacy_artist_cache_migrates_by_album_id_without_upload(self):
+        import time
+        self.cache.write_text(json.dumps({"repository": "owner/repo", "albums": {
+            self.resolver._key("Original Artist", "Album"): {"cover": {"url": PUBLIC, "track_url": PAGE},
+                                                              "expires": time.time() + 86400}}}))
+        restarted = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
+        try:
+            cover = await restarted.resolve("Song", "Other Guest", "Album")
+            self.assertTrue(cover.animated)
+            self.assertFalse(restarted._jobs)
+        finally:
+            await restarted.close()
+
+    async def test_same_album_title_with_another_verified_id_does_not_reuse_cover(self):
+        with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM):
+            with patch("apple_music_presence.motion_artwork.convert_motion", new_callable=AsyncMock, return_value=b"bytes"):
+                with patch.object(self.host, "publish", return_value=PUBLIC):
+                    await self.resolver.resolve("First", "Artist", "Album")
+                    await self.finish_job()
+        self.catalog.resolve_album.return_value = Artwork(STATIC.url, "https://music.apple.com/us/album/album/999")
+        with patch("apple_music_presence.motion_artwork.discover_motion", return_value=None):
+            cover = await self.resolver.resolve("Other", "Unrelated Artist", "Album")
+            self.assertFalse(cover.animated)
+            self.assertIn("999", cover.track_url)
+            await self.finish_job()
+
     async def test_upload_failure_keeps_static_and_retries_after_short_delay(self):
         with patch("apple_music_presence.motion_artwork.time.time", return_value=100) as clock:
             with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM) as discover:

@@ -20,10 +20,11 @@ def make_service(settings, notify, demo=False):
     from .discord_rpc import DiscordRpc
     from .media import WindowsMediaBackend
     from .artwork import ItunesArtworkResolver
+    from .apple_catalog import AppleMusicArtworkResolver
     from .album_artwork import MappedArtworkResolver
     resolver = None
     if settings.artwork:
-        catalog = ItunesArtworkResolver(country=settings.country)
+        catalog = AppleMusicArtworkResolver(ItunesArtworkResolver(country=settings.country), settings.country)
         if settings.motion_artwork:
             from .motion_artwork import AutomaticArtworkResolver, GithubArtworkHost
             catalog = AutomaticArtworkResolver(catalog, GithubArtworkHost(settings.artwork_repository),
