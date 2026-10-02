@@ -12,5 +12,10 @@ dist/
 .env
 .env.*
 settings.json
+motion_cache.json
+album_artwork.local.json
+*.pem
+*.key
+.git-credentials
 *.log
 work/

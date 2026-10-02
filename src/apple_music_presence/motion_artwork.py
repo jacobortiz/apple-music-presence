@@ -36,6 +36,15 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _download(url, limit, *, headers=None, method=None, data=None):
+    parsed = urlsplit(url)
+    permitted = {"music.apple.com", "mvod.itunes.apple.com", "api.github.com", "raw.githubusercontent.com"}
+    if (parsed.scheme != "https" or parsed.hostname not in permitted
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443) or parsed.fragment
+            or any(ord(character) < 32 for character in url)):
+        raise ValueError("Artwork request destination is not permitted")
+    if any(key.casefold() == "authorization" for key in (headers or {})) and parsed.hostname != "api.github.com":
+        raise ValueError("GitHub credentials may only be sent to GitHub's API")
     request = Request(url, headers={"User-Agent": "AppleMusicPresence/0.1", **(headers or {})},
                       method=method, data=data)
     with build_opener(_NoRedirect()).open(request, timeout=10) as response:
@@ -204,6 +213,10 @@ def animated_webp(content):
     while offset + 8 <= len(content):
         kind = content[offset:offset + 4]
         size = int.from_bytes(content[offset + 4:offset + 8], "little")
+        # Encoder output needs only image/animation chunks. Never upload EXIF,
+        # XMP, comments, or other opaque metadata even in an otherwise valid file.
+        if kind not in {b"VP8X", b"ANIM", b"ANMF"}:
+            return False
         if offset + 8 + size > len(content):
             return False
         animation |= kind == b"ANIM" and size == 6
@@ -229,9 +242,11 @@ async def convert_motion(stream):
         process = await asyncio.create_subprocess_exec(
             imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
             "-protocol_whitelist", "file", "-allowed_extensions", "ALL", "-i", str(local),
-            "-vf", "fps=15,scale=384:384,setpts=PTS-STARTPTS", "-an", "-c:v", "libwebp_anim",
+            "-vf", "fps=15,scale=384:384,setpts=PTS-STARTPTS", "-map_metadata", "-1", "-an", "-c:v", "libwebp_anim",
             "-loop", "0", "-quality", "65", str(output),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            env={key: value for key, value in os.environ.items()
+                 if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP"}},
             **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
         try:
             await asyncio.wait_for(process.wait(), 60)
@@ -290,6 +305,11 @@ class GithubArtworkHost:
         repo = api("")
         if repo.get("private") is not False or not repo.get("permissions", {}).get("push"):
             raise ValueError("Artwork host requires a writable public GitHub repository")
+        identity = json.loads(_download("https://api.github.com/user", 64 * 1024, headers=headers))
+        login, user_id = identity.get("login"), identity.get("id")
+        if not isinstance(login, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login) or type(user_id) is not int or user_id <= 0:
+            raise ValueError("GitHub commit identity could not be verified")
+        committer = {"name": login, "email": f"{user_id}+{login}@users.noreply.github.com"}
         try:
             ref = api(f"/git/ref/heads/{self.branch}")
         except HTTPError as error:
@@ -320,6 +340,7 @@ class GithubArtworkHost:
                 raise ValueError("Motion upload cancelled")
             uploaded = api(f"/contents/{path}", "PUT", {"branch": self.branch,
                 "message": f"Cache motion cover for Apple Music album {album_id}",
+                "committer": committer, "author": committer,
                 "content": base64.b64encode(content).decode("ascii")})
             url = public_url(uploaded["commit"]["sha"])
         except HTTPError as error:
@@ -376,7 +397,7 @@ class AutomaticArtworkResolver:
                                + r"/[a-f0-9]{40}/artwork/motion/[0-9]+-[a-f0-9]{12}\.webp")
                     if not re.fullmatch(pattern, cover["url"]) or not album_page(cover["track_url"]):
                         continue
-                    cover = Artwork(cover["url"], cover["track_url"], animated=True)
+                    cover = Artwork(cover["url"], album_page(cover["track_url"]), animated=True)
                 expires = float(item["expires"])
                 if time.time() < expires <= time.time() + 8 * 86400:
                     self._cache[key] = _MotionCache(cover, expires)

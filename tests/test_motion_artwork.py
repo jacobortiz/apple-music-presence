@@ -182,6 +182,43 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
         self.cache.write_text(json.dumps({"repository": "other/repo", "albums": {}}))
         self.assertFalse(AutomaticArtworkResolver(self.catalog, self.host, self.cache)._cache)
 
+    async def test_cached_album_buttons_cannot_share_a_saved_query_token(self):
+        import time
+        key = self.resolver._key("Artist", "Album")
+        self.cache.write_text(json.dumps({"repository": "owner/repo", "albums": {key: {
+            "cover": {"url": PUBLIC, "track_url": PAGE + "?token=secret-fixture"},
+            "expires": time.time() + 1000}}}))
+        resolver = AutomaticArtworkResolver(self.catalog, self.host, self.cache)
+        cover = await resolver.resolve("Song", "Artist", "Album")
+        self.assertEqual(cover.track_url, PAGE)
+        await resolver.close()
+
+    async def test_converter_excludes_environment_secrets_and_removes_metadata(self):
+        import os
+        from types import SimpleNamespace
+        from apple_music_presence.motion_artwork import convert_motion
+        content = (Path(__file__).resolve().parents[1] / "artwork" / "after-hours.webp").read_bytes()
+
+        def video(stream, directory, stop):
+            path = directory / "motion.m3u8"
+            path.write_text("local fixture")
+            return path
+
+        async def spawn(*args, **kwargs):
+            self.assertEqual(set(kwargs["env"]), {"PATH", "SYSTEMROOT", "TEMP"})
+            self.assertNotIn("secret-fixture", repr(kwargs["env"]))
+            self.assertIn("-map_metadata", args)
+            self.assertEqual(args[args.index("-map_metadata") + 1], "-1")
+            Path(args[-1]).write_bytes(content)
+            return SimpleNamespace(returncode=0, wait=AsyncMock(return_value=0))
+
+        with patch.dict(os.environ, {"PATH": "path", "SYSTEMROOT": "system", "TEMP": "temporary",
+                "APPLE_MUSIC_PRESENCE_GITHUB_TOKEN": "secret-fixture", "AWS_SECRET_ACCESS_KEY": "secret-fixture"}, clear=True):
+            with patch("apple_music_presence.motion_artwork.download_video", side_effect=video):
+                with patch("apple_music_presence.motion_artwork.asyncio.create_subprocess_exec", side_effect=spawn):
+                    with patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"):
+                        self.assertEqual(await convert_motion(STREAM), content)
+
 
 class MotionHostingTests(unittest.TestCase):
     def test_host_auth_stays_on_github_api_and_new_image_uses_immutable_commit(self):
@@ -198,11 +235,17 @@ class MotionHostingTests(unittest.TestCase):
             self.assertEqual(kwargs["headers"]["Authorization"], "Bearer secret-fixture")
             if url.endswith("/repos/owner/repo"):
                 return json.dumps({"private": False, "permissions": {"push": True}}).encode()
+            if url == "https://api.github.com/user":
+                return json.dumps({"id": 12345, "login": "owner", "email": "private@example.invalid"}).encode()
             if url.endswith("/git/ref/heads/motion-artwork"):
                 return json.dumps({"object": {"sha": "b" * 40}}).encode()
             self.assertEqual(kwargs["method"], "PUT")
             body = json.loads(kwargs["data"])
             self.assertEqual(body["branch"], "motion-artwork")
+            self.assertEqual(body["author"], {"name": "owner", "email": "12345+owner@users.noreply.github.com"})
+            self.assertEqual(body["committer"], body["author"])
+            self.assertNotIn("private@example.invalid", kwargs["data"].decode())
+            self.assertEqual(set(body), {"branch", "message", "content", "author", "committer"})
             self.assertNotIn("secret-fixture", body["message"])
             return json.dumps({"commit": {"sha": "a" * 40}}).encode()
 
@@ -223,6 +266,42 @@ class MotionHostingTests(unittest.TestCase):
             with patch("apple_music_presence.motion_artwork._download", return_value=b'{"private":true,"permissions":{"push":true}}'):
                 with self.assertRaises(ValueError):
                     host.publish("123", STREAM, content)
+
+    def test_authenticated_downloads_cannot_send_credentials_to_other_hosts(self):
+        from apple_music_presence.motion_artwork import _download
+        for url in ("https://raw.githubusercontent.com/owner/repo/cover.webp",
+                    "https://music.apple.com/us/album/album/123",
+                    "https://mvod.itunes.apple.com/clip.mp4", "https://evil.test/file"):
+            with self.subTest(url=url):
+                with patch("apple_music_presence.motion_artwork.build_opener") as opener:
+                    with self.assertRaises(ValueError):
+                        _download(url, 100, headers={"Authorization": "Bearer secret-fixture"})
+                    opener.assert_not_called()
+
+    def test_http_and_unapproved_download_hosts_are_rejected(self):
+        from apple_music_presence.motion_artwork import _download
+        for url in ("http://api.github.com/repos/owner/repo", "file:///settings.json",
+                    "https://api.github.com.evil.test/file", "https://user:password@api.github.com/file",
+                    "https://api.github.com:444/file"):
+            with self.subTest(url=url):
+                with patch("apple_music_presence.motion_artwork.build_opener") as opener:
+                    with self.assertRaises(ValueError):
+                        _download(url, 100)
+                    opener.assert_not_called()
+
+    def test_redirect_handler_never_forwards_credentials(self):
+        from urllib.request import Request
+        from apple_music_presence.motion_artwork import _NoRedirect
+        original = Request("https://api.github.com/file", headers={"Authorization": "Bearer secret-fixture"})
+        self.assertIsNone(_NoRedirect().redirect_request(original, None, 302, "Found", {}, "https://evil.test/file"))
+
+    def test_artwork_with_embedded_metadata_cannot_be_uploaded(self):
+        content = (Path(__file__).resolve().parents[1] / "artwork" / "after-hours.webp").read_bytes()
+        for kind in (b"EXIF", b"XMP ", b"JUNK"):
+            value = b"private metadata"
+            chunk = kind + len(value).to_bytes(4, "little") + value
+            contaminated = content[:4] + (len(content) + len(chunk) - 8).to_bytes(4, "little") + content[8:] + chunk
+            self.assertFalse(animated_webp(contaminated))
 
     def test_settings_round_trip_and_motion_requires_public_host_name(self):
         settings = Settings(client_id="123456789012345678", motion_artwork=True, artwork_repository="owner/repo")

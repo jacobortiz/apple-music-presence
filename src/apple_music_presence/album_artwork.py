@@ -18,7 +18,7 @@ def _animation_url(value) -> str | None:
         url = urlsplit(value)
         if (url.scheme != "https" or not url.hostname or url.username is not None
                 or url.password is not None or url.port not in (None, 443)
-                or url.fragment or any(ord(character) < 32 for character in value)
+                or url.fragment or url.query or any(ord(character) < 32 for character in value)
                 or not url.path.lower().endswith((".webp", ".gif", ".avif"))):
             return None
     except ValueError:
@@ -59,6 +59,8 @@ class MappedArtworkResolver:
             key = (_normalize(artist), _normalize(album))
             image_url = _animation_url(entry.get("image_url"))
             album_url = _safe_url(entry.get("album_url"), artwork=False)
+            if album_url and (urlsplit(album_url).query or urlsplit(album_url).fragment):
+                album_url = None
             if not all(key) or not image_url or not album_url:
                 continue
             artwork = Artwork(image_url, album_url, animated=True)

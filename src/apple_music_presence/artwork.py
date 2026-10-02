@@ -16,7 +16,7 @@ import logging
 from time import monotonic
 import unicodedata
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,12 +70,22 @@ def _safe_url(value: object, *, artwork: bool) -> str | None:
     return value if permitted else None
 
 
+class _NoCatalogRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _fetch_json(url: str, timeout: float) -> object:
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname != "itunes.apple.com"
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443) or parsed.fragment):
+        raise ValueError("Catalog requests must stay on Apple's public HTTPS API")
     request = Request(
         url,
         headers={"Accept": "application/json", "User-Agent": "AppleMusicPresence-MVP/0.1"},
     )
-    with urlopen(request, timeout=timeout) as response:
+    with build_opener(_NoCatalogRedirect()).open(request, timeout=timeout) as response:
         data = response.read(_MAX_RESPONSE_BYTES + 1)
     if len(data) > _MAX_RESPONSE_BYTES:
         raise ValueError("Catalog response exceeded the size limit")

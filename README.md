@@ -51,7 +51,7 @@ After installation, `launch.cmd` in this folder opens the desktop window. The in
 
 Use `--start` to open the desktop and immediately start sharing with the saved settings. Normal launches wait for the Start button.
 
-The Application ID is public, not a credential. The desktop saves it and your preferences in `%LOCALAPPDATA%\AppleMusicPresence\settings.json`. Headless options override saved preferences for that run. No listening history is saved.
+The Application ID is public, not a credential. The desktop saves it and your preferences in `%LOCALAPPDATA%\AppleMusicPresence\settings.json`. Headless options override saved preferences for that run. No per-song listening history is saved. The album cache and public artwork commits identify albums the app prepared, as described below.
 
 ## Preview and diagnostics
 
@@ -134,6 +134,8 @@ Enable **Prefer animated covers whenever available** and enter a public GitHub r
 
 New covers are uploaded to the **motion-artwork** branch in your chosen repository, under `artwork/motion/`. This branch is created automatically; app source on the main branch is unaffected. Published URLs include their commit SHA to avoid stale negative image caching. Uploaded album identifiers and covers are public. Conversion runs locally, one album at a time. No-motion results are cached for a day, animations for seven days, and temporary failures retry after a minute. The local cache is `%LOCALAPPDATA%\AppleMusicPresence\motion_cache.json`; it holds artwork results, not song history.
 
+Public artwork commits also show upload times and the GitHub account that published them. This can reveal albums the app prepared; it is not a private hosting service. New automatic uploads explicitly use GitHub's no-reply commit email. Older commits keep their original author metadata unless repository history is separately rewritten.
+
 For GitHub access, use either:
 
 - An existing Git for Windows sign-in with repository **Contents: write** permission. The app retrieves it through Git's credential helper without opening prompts or saving the token in its settings.
@@ -167,7 +169,9 @@ For a personal mapping without editing the source, create `%LOCALAPPDATA%\AppleM
 }
 ```
 
-Use a direct HTTPS image URL that works without signing in, ending in `.webp`, `.gif`, or `.avif`. The Apple Music album URL supplies the **Listen on Apple Music** button for every song in that album. Matching normalizes punctuation, whitespace, and case but preserves edition names, featured artists, and other words. Conflicting entries are ignored rather than choosing an arbitrary cover. Restart the bridge after changing the map.
+Use a direct HTTPS image URL that works without signing in, ending in `.webp`, `.gif`, or `.avif`. Image and album URLs in personal mappings must have no query string or fragment, preventing signed links or embedded access tokens from being shared with Discord. The Apple Music album URL supplies the **Listen on Apple Music** button for every song in that album. Matching normalizes punctuation, whitespace, and case but preserves edition names, featured artists, and other words. Conflicting entries are ignored rather than choosing an arbitrary cover. Restart the bridge after changing the map.
+
+Network downloads are restricted to the required Apple and GitHub HTTPS hosts. Redirects are blocked, and GitHub authorization headers are rejected outside `api.github.com`. The converter receives a minimal operating-system environment, not account tokens; it strips metadata, and uploads reject EXIF/XMP or other non-image chunks. Settings, caches, credentials, private keys, working logs, and build outputs are excluded from Git. The app does not collect browser cookies, Apple passwords, Discord tokens, local music files, or telemetry.
 
 Discord supports [animated external image URLs](https://docs.discord.com/developers/events/gateway-events#activity-object-activity-asset-image); video streams and MP4 URLs cannot be used as cover images. Automatic discovery reads public album pages without a MusicKit token. [imageio-ffmpeg 0.6.0](https://pypi.org/project/imageio-ffmpeg/0.6.0/) supplies the local converter; [GitHub's Contents API](https://docs.github.com/en/rest/repos/contents) publishes the converted file.
 

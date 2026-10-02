@@ -48,12 +48,15 @@ class AlbumArtworkTests(unittest.IsolatedAsyncioTestCase):
         invalid = ("http://example.org/cover.webp", "file:///cover.webp",
                    "https://user:password@example.org/cover.webp", "https://example.org/cover.mp4",
                    "https://example.org:bad/cover.webp", "https://example.org/cover.webp#fragment",
+                   "https://example.org/cover.webp?token=secret-fixture",
                    "https://example.org/cover.webp\n")
         for url in invalid:
             with self.subTest(url=url):
                 resolver = MappedArtworkResolver(self.catalog, [mapping(image_url=url)])
                 self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
         resolver = MappedArtworkResolver(self.catalog, [mapping(album_url="https://example.org/album")])
+        self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
+        resolver = MappedArtworkResolver(self.catalog, [mapping(album_url="https://music.apple.com/us/album/album/123?token=secret-fixture")])
         self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
 
     async def test_conflicting_album_mappings_fall_back_instead_of_guessing(self):

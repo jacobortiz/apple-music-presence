@@ -26,6 +26,18 @@ def catalog_result(**changes):
 
 
 class ArtworkTests(unittest.IsolatedAsyncioTestCase):
+    def test_catalog_downloads_reject_other_destinations_and_redirects(self):
+        from apple_music_presence.artwork import _fetch_json, _NoCatalogRedirect
+        from urllib.request import Request
+        for url in ("https://evil.test/search", "http://itunes.apple.com/search",
+                    "https://user:password@itunes.apple.com/search"):
+            with patch("apple_music_presence.artwork.build_opener") as opener:
+                with self.assertRaises(ValueError):
+                    _fetch_json(url, 5)
+                opener.assert_not_called()
+        self.assertIsNone(_NoCatalogRedirect().redirect_request(Request("https://itunes.apple.com/search"),
+            None, 302, "Found", {}, "https://evil.test/search"))
+
     async def test_album_lookup_reuses_cover_across_songs_and_preserves_editions(self):
         resolver = ItunesArtworkResolver()
         result = {"collectionType": "Album", "artistName": "Artist", "collectionName": "Album",
