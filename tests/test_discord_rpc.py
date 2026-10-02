@@ -165,6 +165,7 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(
             self.client.update(
                 activity_type=2,
+                name="An artist",
                 details="A song 🎵",
                 state="Artist • Album",
                 start=1700000000,
@@ -180,6 +181,8 @@ class PypresenceContractTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(sent[8:])
         activity = payload["args"]["activity"]
         self.assertEqual(activity["type"], 2)
+        self.assertEqual(activity["name"], "An artist")
+        self.assertEqual(activity["status_display_type"], 0)
         self.assertEqual(activity["details"], "A song 🎵")
         self.assertEqual(activity["timestamps"], {"start": 1700000000, "end": 1700000123})
         self.assertEqual(activity["assets"]["large_image"], "https://example.org/cover.jpg")

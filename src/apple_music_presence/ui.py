@@ -85,9 +85,9 @@ class DesktopApp:
         self.id_entry = ttk.Entry(main, textvariable=self.client_id)
         self.id_entry.pack(fill="x")
         self.artwork_enabled = tk.BooleanVar(value=self.settings.artwork)
-        self.art_check = ttk.Checkbutton(main, text="Find album art using Apple’s public catalog", variable=self.artwork_enabled)
+        self.art_check = ttk.Checkbutton(main, text="Use album artwork (animated covers where available)", variable=self.artwork_enabled)
         self.art_check.pack(anchor="w", pady=(13, 2))
-        ttk.Label(main, text="Optional: sends song, artist, and album to Apple for matching.",
+        ttk.Label(main, text="For other albums, sends song, artist, and album to Apple for matching.",
                   style="Muted.TLabel", wraplength=560).pack(anchor="w")
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(18, 12))

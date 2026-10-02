@@ -27,10 +27,20 @@ class PresenceTests(unittest.TestCase):
     def test_pause_clears_and_track_fields_and_timestamps(self):
         self.assertIsNone(build_presence(snapshot(PlaybackState.PAUSED), 1000))
         payload = build_presence(snapshot(), 1000)
+        self.assertEqual(payload["name"], "Artist")
         self.assertEqual(payload["details"], "Song")
         self.assertIn("Artist", payload["state"])
         self.assertIn("Album", payload["state"])
         self.assertEqual((payload["start"], payload["end"]), (990, 1190))
+
+    def test_activity_name_uses_only_artist_with_safe_missing_metadata_fallback(self):
+        for artist, expected in (("  The   Weeknd\n", "The Weeknd"),
+                                 (" \t", "Apple Music"),
+                                 ("X", "X\u200b"),
+                                 ("A" * 200, "A" * 128)):
+            with self.subTest(artist=artist):
+                media = MediaSnapshot(Track("Song", artist, "Album"), PlaybackState.PLAYING)
+                self.assertEqual(build_presence(media, 1000)["name"], expected)
 
     def test_timer_jitter_does_not_flood_but_seek_does_update(self):
         old = build_presence(snapshot(), 1000)
@@ -100,7 +110,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.service.tick()
         self.assertEqual(self.rpc.calls[-1], "clear")
         self.backend.value = snapshot()
-        self.clock_value += 16
+        self.clock_value += 5
         await self.service.tick()
         self.assertIsInstance(self.rpc.calls[-1], dict)
 
@@ -139,9 +149,38 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         status = await self.service.tick()
         self.assertIn("queued", status.message)
         self.assertEqual(len(self.rpc.calls), 2)
-        self.clock_value += 13
+        self.backend.value = MediaSnapshot(Track("Latest", "Artist", "Album"),
+                                           PlaybackState.PLAYING, 0, 100, 1000)
+        self.clock_value = 104.99
+        status = await self.service.tick()
+        self.assertIn("queued", status.message)
+        self.assertEqual(len(self.rpc.calls), 2)
+        self.clock_value = 105
         await self.service.tick()
-        self.assertEqual(self.rpc.calls[-1]["details"], "New")
+        self.assertEqual(self.rpc.calls[-1]["details"], "Latest")
+
+    async def test_continuous_skips_send_at_most_once_per_five_seconds(self):
+        await self.service.tick()
+        sent_at = [self.clock_value]
+        for second in range(1, 21):
+            self.clock_value = 100 + second
+            self.backend.value = MediaSnapshot(Track(f"Song {second}", "Artist", "Album"),
+                                               PlaybackState.PLAYING, 0, 100, 1000)
+            calls_before = len(self.rpc.calls)
+            await self.service.tick()
+            if len(self.rpc.calls) != calls_before:
+                sent_at.append(self.clock_value)
+        self.assertEqual(sent_at, [100, 105, 110, 115, 120])
+        self.assertEqual(self.rpc.calls[-1]["details"], "Song 20")
+
+    async def test_artist_change_updates_activity_name_after_rate_limit(self):
+        await self.service.tick()
+        self.backend.value = MediaSnapshot(Track("Song", "Another artist", "Album"),
+                                           PlaybackState.PLAYING, 10, 200, 1000)
+        self.clock_value += 5
+        await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["name"], "Another artist")
+        self.assertEqual(self.rpc.calls[-1]["details"], "Song")
 
     async def test_update_failure_backoff_increases_despite_successful_handshakes(self):
         from unittest.mock import AsyncMock
@@ -159,24 +198,178 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.backend.closed)
 
     async def test_artwork_resolution_is_published_and_status_reports_it(self):
-        import asyncio
         from unittest.mock import AsyncMock
         from apple_music_presence.artwork import Artwork
         art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/song/123")
         self.service.artwork = SimpleNamespace(resolve=AsyncMock(return_value=art))
         status = await self.service.tick()
+        self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
+        self.assertIn("sent to Discord", status.artwork_status)
+        self.assertEqual(len(self.rpc.calls), 2)  # Connect, then one complete update.
+
+    async def test_slow_artwork_does_not_block_track_and_publishes_later(self):
+        import asyncio
+        from apple_music_presence.artwork import Artwork
+        ready = asyncio.Event()
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/song/123")
+
+        async def resolve(*metadata):
+            await ready.wait()
+            return art
+
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        with patch("apple_music_presence.service.ARTWORK_GRACE_SECONDS", 0.01):
+            status = await asyncio.wait_for(self.service.tick(), 0.5)
         self.assertIn("looking up", status.artwork_status)
+        self.assertNotIn("large_image", self.rpc.calls[-1])
+        self.assertFalse(self.service._art_task.cancelled())
+        ready.set()
         await asyncio.sleep(0)
+        self.clock_value += 1
         status = await self.service.tick()
         self.assertIn("found", status.artwork_status)
-        self.clock_value += 15
+        self.assertEqual(len(self.rpc.calls), 2)
+        self.clock_value += 4
         status = await self.service.tick()
         self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
         self.assertIn("sent to Discord", status.artwork_status)
 
+    async def test_track_change_cancels_slow_old_cover_and_never_publishes_it(self):
+        import asyncio
+        from apple_music_presence.artwork import Artwork
+        old_cover = Artwork("https://is1-ssl.mzstatic.com/old.jpg", "https://music.apple.com/us/song/1")
+        new_cover = Artwork("https://is1-ssl.mzstatic.com/new.jpg", "https://music.apple.com/us/song/2")
+
+        async def resolve(title, *metadata):
+            if title == "Song":
+                await asyncio.Future()
+                return old_cover
+            return new_cover
+
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        with patch("apple_music_presence.service.ARTWORK_GRACE_SECONDS", 0.01):
+            await self.service.tick()
+        old_task = self.service._art_task
+        self.backend.value = MediaSnapshot(Track("New", "Artist", "Album"), PlaybackState.PLAYING)
+        self.clock_value += 5
+        await self.service.tick()
+        self.assertTrue(old_task.cancelled())
+        self.assertEqual(self.rpc.calls[-1]["details"], "New")
+        self.assertEqual(self.rpc.calls[-1]["large_image"], new_cover.url)
+
+    async def test_paused_new_track_does_not_wait_for_artwork(self):
+        import asyncio
+
+        async def resolve(*metadata):
+            await asyncio.Future()
+
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        self.backend.value = snapshot(PlaybackState.PAUSED)
+        with patch("apple_music_presence.service.asyncio.wait") as wait:
+            await self.service.tick()
+        wait.assert_not_called()
+        self.assertEqual(self.rpc.calls[-1], "clear")
+
+    async def test_completed_artwork_wakes_worker_before_long_poll_interval(self):
+        import asyncio
+        import threading
+        from apple_music_presence.artwork import Artwork
+        ready = asyncio.Event()
+        stop = threading.Event()
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/song/123")
+
+        async def resolve(*metadata):
+            await ready.wait()
+            return art
+
+        def notify(status):
+            if "looking up" in status.artwork_status:
+                self.clock_value += 5
+                ready.set()
+            elif "sent to Discord" in status.artwork_status:
+                stop.set()
+
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        self.service.notify = notify
+        self.service.poll_interval = 10
+        with patch("apple_music_presence.service.ARTWORK_GRACE_SECONDS", 0.01):
+            await asyncio.wait_for(self.service.run(stop), 2)
+        updates = [call for call in self.rpc.calls if isinstance(call, dict)]
+        self.assertEqual(len(updates), 2)
+        self.assertEqual(updates[-1]["large_image"], art.url)
+
     async def test_disabled_artwork_is_visible_in_status(self):
         status = await self.service.tick()
         self.assertIn("off", status.artwork_status)
+
+    async def test_transient_artwork_failure_recovers_without_changing_song(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/song/123")
+        resolve = AsyncMock(side_effect=[OSError("Temporary failure"), art])
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        status = await self.service.tick()
+        self.assertIn("retrying automatically", status.artwork_status)
+        self.assertNotIn("large_image", self.rpc.calls[-1])
+        self.clock_value = 109.99
+        await self.service.tick()
+        self.assertEqual(resolve.await_count, 1)
+        self.clock_value = 110
+        await self.service.tick()
+        await asyncio.sleep(0)
+        status = await self.service.tick()
+        self.assertEqual(resolve.await_count, 2)
+        self.assertEqual(self.rpc.calls[-1]["details"], "Song")
+        self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
+        self.assertIn("sent to Discord", status.artwork_status)
+
+    async def test_artwork_failures_back_off_to_one_attempt_per_minute(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        resolve = AsyncMock(return_value=None)
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        await self.service.tick()
+        for expected_attempts, next_attempt in enumerate((110, 130, 170, 230, 290), start=2):
+            self.clock_value = next_attempt - 0.01
+            await self.service.tick()
+            self.assertEqual(resolve.await_count, expected_attempts - 1)
+            self.clock_value = next_attempt
+            await self.service.tick()
+            await asyncio.sleep(0)
+            await self.service.tick()
+            self.assertEqual(resolve.await_count, expected_attempts)
+
+    async def test_artwork_retry_waits_for_resume(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        resolve = AsyncMock(return_value=None)
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        await self.service.tick()
+        self.clock_value = 200
+        self.backend.value = snapshot(PlaybackState.PAUSED)
+        status = await self.service.tick()
+        self.assertEqual(resolve.await_count, 1)
+        self.assertIn("resumes with playback", status.artwork_status)
+        self.backend.value = snapshot()
+        await self.service.tick()
+        await asyncio.sleep(0)
+        await self.service.tick()
+        self.assertEqual(resolve.await_count, 2)
+
+    async def test_new_track_does_not_inherit_artwork_retry_delay(self):
+        from unittest.mock import AsyncMock
+        from apple_music_presence.artwork import Artwork
+        art = Artwork("https://is1-ssl.mzstatic.com/cover.jpg", "https://music.apple.com/us/song/123")
+        resolve = AsyncMock(side_effect=[None, art])
+        self.service.artwork = SimpleNamespace(resolve=resolve)
+        await self.service.tick()
+        self.clock_value += 5
+        self.backend.value = MediaSnapshot(Track("New", "Artist", "Album"), PlaybackState.PLAYING)
+        await self.service.tick()
+        self.assertEqual(resolve.await_count, 2)
+        self.assertEqual(self.rpc.calls[-1]["details"], "New")
+        self.assertEqual(self.rpc.calls[-1]["large_image"], art.url)
 
 
 if __name__ == "__main__":

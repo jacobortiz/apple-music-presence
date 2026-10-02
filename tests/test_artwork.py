@@ -81,7 +81,10 @@ class ArtworkTests(unittest.IsolatedAsyncioTestCase):
         with patch("apple_music_presence.artwork.monotonic", return_value=100) as clock:
             with patch("apple_music_presence.artwork._fetch_json", side_effect=[TimeoutError(), {"results": [catalog_result()]}]) as fetch:
                 self.assertIsNone(await resolver.resolve("Song", "Artist", "Album"))
-                clock.return_value = 161
+                clock.return_value = 109.99
+                self.assertIsNone(await resolver.resolve("Song", "Artist", "Album"))
+                fetch.assert_called_once()
+                clock.return_value = 110
                 self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), Artwork(ART_URL, TRACK_URL))
                 self.assertEqual(fetch.call_count, 2)
 

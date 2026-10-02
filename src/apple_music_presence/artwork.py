@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 _LOGGER = logging.getLogger(__name__)
 _MAX_RESPONSE_BYTES = 512 * 1024
 _MIN_REQUEST_INTERVAL = 3.2
+_FAILURE_CACHE_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class Artwork:
 
     url: str
     track_url: str
+    animated: bool = False
 
 
 @dataclass(frozen=True)
@@ -167,7 +169,7 @@ class ItunesArtworkResolver:
                 # Deliberately avoid logging the query or listener metadata.
                 _LOGGER.debug("Artwork lookup unavailable (%s)", type(error).__name__)
                 result = None
-                ttl = 60
+                ttl = _FAILURE_CACHE_SECONDS
             self._cache[key] = _CacheEntry(result, monotonic() + ttl)
             self._cache.move_to_end(key)
             while len(self._cache) > self.cache_size:

@@ -20,6 +20,8 @@ def build_presence(snapshot: MediaSnapshot, now: float, artwork: Any = None) -> 
         return None
     context = " · ".join(part for part in (track.artist, track.album) if part.strip())
     payload = {
+        # Listening uses the activity name; retain artist/album in the card.
+        "name": discord_text(track.artist if track.artist.strip() else "Apple Music"),
         "details": discord_text(track.title),
         "state": discord_text(context or "Apple Music"),
     }

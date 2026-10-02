@@ -12,6 +12,14 @@ from .presence import build_presence, materially_changed
 
 log = logging.getLogger(__name__)
 
+# Send changed metadata sooner; Discord may still coalesce visible updates.
+UPDATE_INTERVAL_SECONDS = 5.0
+# Give cached/fast covers a chance to join the first track update, rather than
+# sending text alone and then waiting another update interval for the cover.
+ARTWORK_GRACE_SECONDS = 0.75
+ARTWORK_RETRY_SECONDS = 10.0
+ARTWORK_MAX_RETRY_SECONDS = 60.0
+
 
 @dataclass(frozen=True)
 class ServiceStatus:
@@ -35,24 +43,40 @@ class PresenceService:
         self._art_track = None
         self._art_task: asyncio.Task | None = None
         self._art_result = None
+        self._art_next_retry = 0.0
+        self._art_retry_delay = ARTWORK_RETRY_SECONDS
 
     async def _enrich(self, snapshot: MediaSnapshot):
         track = snapshot.track
-        if track != self._art_track:
+        new_track = track != self._art_track
+        if new_track:
             if self._art_task:
                 self._art_task.cancel()
                 await asyncio.gather(self._art_task, return_exceptions=True)
             self._art_task, self._art_result = None, None
             self._art_track = track
-            if track and self.artwork:
-                self._art_task = asyncio.create_task(
-                    self.artwork.resolve(track.title, track.artist, track.album))
+            self._art_next_retry = 0.0
+            self._art_retry_delay = ARTWORK_RETRY_SECONDS
+        if (track and self.artwork and snapshot.state == PlaybackState.PLAYING
+                and self._art_task is None and self._art_result is None
+                and time.monotonic() >= self._art_next_retry):
+            self._art_task = asyncio.create_task(
+                self.artwork.resolve(track.title, track.artist, track.album))
+        if (new_track and self._art_task and snapshot.state == PlaybackState.PLAYING
+                and time.monotonic() - self._last_sent >= UPDATE_INTERVAL_SECONDS):
+            # asyncio.wait leaves a slow lookup running after the grace period.
+            # Pausing/stopping never waits for artwork, and update throttling
+            # already gives queued tracks time to finish their lookup.
+            await asyncio.wait({self._art_task}, timeout=ARTWORK_GRACE_SECONDS)
         if self._art_task and self._art_task.done():
             try:
                 self._art_result = self._art_task.result()
             except Exception:
                 log.debug("Optional artwork lookup failed", exc_info=True)
             self._art_task = None
+            if self._art_result is None:
+                self._art_next_retry = time.monotonic() + self._art_retry_delay
+                self._art_retry_delay = min(ARTWORK_MAX_RETRY_SECONDS, self._art_retry_delay * 2)
         return self._art_result
 
     async def tick(self) -> ServiceStatus:
@@ -93,7 +117,7 @@ class PresenceService:
                         await self.rpc.clear()
                         self._retry_delay = 1.0
                         self._last_sent = now
-                elif (now - self._last_sent >= 15 and
+                elif (now - self._last_sent >= UPDATE_INTERVAL_SECONDS and
                       (materially_changed(self._last_payload, payload) or now - self._last_sent >= 30)):
                     await self.rpc.update(payload)
                     self._retry_delay = 1.0
@@ -119,9 +143,12 @@ class PresenceService:
                 art_status = "Album art: looking up this track…"
             elif artwork:
                 sent = self._last_payload and self._last_payload.get("large_image") == artwork.url
-                art_status = "Album art: sent to Discord" if sent else "Album art: found; waiting to publish"
+                label = "Animated album art" if getattr(artwork, "animated", False) else "Album art"
+                art_status = f"{label}: sent to Discord" if sent else f"{label}: found; waiting to publish"
+            elif snapshot.state != PlaybackState.PLAYING:
+                art_status = "Album art: lookup resumes with playback"
             else:
-                art_status = "Album art: no catalog match or lookup unavailable"
+                art_status = "Album art: no catalog match or lookup unavailable; retrying automatically"
         status = ServiceStatus(snapshot, message, self.rpc.connected,
                                self.rpc.connected and self._last_payload is not None, art_status)
         self.notify(status)
@@ -134,6 +161,8 @@ class PresenceService:
                 # Interruptible polling keeps the desktop Stop button responsive.
                 deadline = time.monotonic() + self.poll_interval
                 while not stop.is_set() and time.monotonic() < deadline:
+                    if self._art_task and self._art_task.done():
+                        break  # Publish a completed cover without another full poll.
                     await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
         finally:
             await self.close()

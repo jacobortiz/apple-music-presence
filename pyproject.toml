@@ -29,3 +29,6 @@ apple-music-presence-desktop = "apple_music_presence.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+apple_music_presence = ["album_artwork.json"]

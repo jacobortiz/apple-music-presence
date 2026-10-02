@@ -9,7 +9,7 @@ import signal
 import sys
 import threading
 
-from .config import load_settings
+from .config import load_settings, settings_path
 from .service import PresenceService
 
 
@@ -20,7 +20,9 @@ def make_service(settings, notify, demo=False):
     from .discord_rpc import DiscordRpc
     from .media import WindowsMediaBackend
     from .artwork import ItunesArtworkResolver
-    resolver = ItunesArtworkResolver(country=settings.country) if settings.artwork else None
+    from .album_artwork import MappedArtworkResolver
+    resolver = MappedArtworkResolver.load(ItunesArtworkResolver(country=settings.country),
+        settings_path().with_name("album_artwork.json")) if settings.artwork else None
     return PresenceService(WindowsMediaBackend(source_id=settings.source_id or None),
                            DiscordRpc(settings.client_id), artwork=resolver, notify=notify)
 

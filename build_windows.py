@@ -13,6 +13,7 @@ def main():
         "--noconfirm", "--onefile", "--hide-console", "hide-early",
         "--name", "AppleMusicPresence", "--paths", str(root / "src"),
         "--collect-all", "winrt", "--distpath", str(root / "dist"),
+        "--collect-data", "apple_music_presence",
         "--workpath", str(root / "build"), "--specpath", str(root / "build"),
         str(root / "desktop_entry.py"),
     ])
