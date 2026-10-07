@@ -33,21 +33,38 @@ class ApplePageTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.catalog = AsyncMock()
         self.catalog.resolve.return_value = None
+        self.catalog.resolve_album.return_value = None
         self.resolver = AppleMusicArtworkResolver(self.catalog)
 
-    async def test_missing_itunes_recording_uses_verified_album_and_indexes_guests(self):
+    async def test_missing_recordings_are_verified_individually_and_cached(self):
         search = html([song()])
         album = html([header(), song(), song("Second", "Tainy & Another")])
-        with patch.object(self.resolver, "_page", new_callable=AsyncMock, side_effect=[search, album]) as fetch:
+        with patch.object(self.resolver, "_page", new_callable=AsyncMock,
+                          side_effect=[search, album, html([song("Second", "Tainy & Another")]), album]) as fetch:
             first = await self.resolver.resolve("First", "Tainy & Guest", "DATA")
             self.assertEqual(first.url, ART.replace("{w}", "1024").replace("{h}", "1024").replace("{f}", "jpg"))
             second = await self.resolver.resolve("Second", "Tainy & Another", "DATA")
             self.assertEqual(first, second)
-            self.assertEqual(fetch.await_count, 2)
-            self.catalog.resolve.assert_awaited_once()
+            self.assertEqual(await self.resolver.resolve("First", "Tainy & Guest", "DATA"), first)
+            self.assertEqual(fetch.await_count, 4)
+            self.assertEqual(self.catalog.resolve.await_count, 2)
             self.assertEqual(first.track_url, PAGE)
-            self.assertEqual(await self.resolver.resolve_album("Tainy & Another", "DATA"), first)
-            self.catalog.resolve_album.assert_not_awaited()
+            self.assertIsNone(await self.resolver.resolve_album("Tainy & Another", "DATA"))
+            self.catalog.resolve_album.assert_awaited_once_with("Tainy & Another", "DATA")
+
+    async def test_previous_album_rows_do_not_hide_an_ambiguous_shared_song(self):
+        other = "https://music.apple.com/us/album/data/999"
+        first_album = html([header(), song(), song("Shared")])
+        other_song = song("Shared", contentDescriptor=descriptor("song", other))
+        second_album = html([
+            header(contentDescriptor=descriptor("album", other, "999"),
+                   artwork={"dictionary": {"url": ART.replace("cover/", "other/")}}), other_song])
+        pages = [html([song()]), first_album,
+                 html([song("Shared"), other_song]), first_album, second_album]
+        with patch.object(self.resolver, "_page", new_callable=AsyncMock, side_effect=pages) as fetch:
+            self.assertIsNotNone(await self.resolver.resolve("First", "Tainy & Guest", "DATA"))
+            self.assertIsNone(await self.resolver.resolve("Shared", "Tainy & Guest", "DATA"))
+            self.assertEqual(fetch.await_count, 5)
 
     async def test_catalog_success_never_fetches_web_pages(self):
         self.catalog.resolve.return_value = "cover fixture"

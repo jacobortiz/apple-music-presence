@@ -1,6 +1,6 @@
 """Public Apple Music page fallback for recordings omitted by iTunes search.
 
-Only verified album headers and their own track rows enter the cache. No
+Only independently verified track matches enter the cache. No
 account, cookies, private API, or developer token is used. Page format changes
 fail closed and leave ordinary playback sharing available.
 """
@@ -12,10 +12,10 @@ import json
 import logging
 from time import monotonic
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlsplit, urljoin, quote
+from urllib.parse import urlencode, urlsplit, quote
 
 from .artwork import Artwork, ARTWORK_SIZE, _normalize, _safe_url, _MIN_REQUEST_INTERVAL
-from .motion_artwork import _Scripts, _download, album_page
+from .motion_artwork import _Scripts, _download, _album_redirect, album_page
 
 log = logging.getLogger(__name__)
 
@@ -117,16 +117,8 @@ class AppleMusicArtworkResolver:
         self._next_request = 0.0
 
     async def resolve_album(self, artist, album):
-        # A confirmed album's track rows already identify its guest artists.
-        # Reuse that result before repeating a search for each collaboration.
-        key = (_normalize(artist), _normalize(album))
-        now = monotonic()
-        matches = {entry.cover for track, entry in self._tracks.items()
-                   if track[1:] == key and entry.cover and entry.expires > now}
-        if len(matches) == 1:
-            return next(iter(matches))
-        if len(matches) > 1:
-            return None
+        # A song match cannot establish that every identically named album is
+        # the same release. Album lookups have their own exact-match cache.
         return await self.catalog.resolve_album(artist, album)
 
     async def _page(self, url):
@@ -138,12 +130,8 @@ class AppleMusicArtworkResolver:
             try:
                 return (await asyncio.to_thread(_download, url, 3 * 1024 * 1024)).decode("utf-8")
             except HTTPError as error:
-                # Song links can use the song's slug; Apple redirects their
-                # album page to its canonical slug. Only the exact same Apple
-                # album and storefront may redirect, without any credentials.
-                target = album_page(urljoin(url, error.headers.get("Location", "")))
-                if (error.code not in (301, 302, 307, 308) or attempt == 2
-                        or not target or not _identity(url) or _identity(target) != _identity(url)):
+                target = _album_redirect(url, error)
+                if attempt == 2 or not target:
                     raise
                 url = target
 
@@ -177,22 +165,18 @@ class AppleMusicArtworkResolver:
             try:
                 query = urlencode({"term": " ".join(value.strip() for value in metadata)}, quote_via=quote)
                 search = await self._page(f"https://music.apple.com/{self.country}/search?{query}")
-                matches, verified_tracks = set(), []
+                matches = set()
                 for page in _candidate_pages(search, title):
                     if _identity(page)[0] != self.country:
                         continue
                     tracks = _album_tracks(await self._page(page), page, album)
                     if key in tracks:
                         matches.add(tracks[key])
-                        verified_tracks.append(tracks)
                 cover = next(iter(matches)) if len(matches) == 1 else None
                 if cover:
-                    # Index only this confirmed album, including guest artists.
-                    # Same titles on unrelated artists/editions remain distinct.
-                    for tracks in verified_tracks:
-                        for track_key, track_cover in tracks.items():
-                            if track_cover == cover:
-                                self._remember(track_key, track_cover, 86400)
+                    # Other rows may also appear on another release. Verify
+                    # each requested song before treating its cover as cached.
+                    self._remember(key, cover, 86400)
                     return cover
             except (OSError, ValueError, TypeError, AttributeError, RecursionError) as error:
                 log.debug("Public Apple Music lookup unavailable (%s)", type(error).__name__)

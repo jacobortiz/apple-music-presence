@@ -36,7 +36,7 @@ Enable **Prefer animated covers whenever available** and enter a public GitHub r
 - Your existing Git for Windows credential helper sign-in.
 - A fine-grained token with **Contents: read and write**, supplied through `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN`. Keep it out of settings and Git.
 
-Normal art stays visible while a new animation is prepared. When Apple provides a supported motion cover, the app converts it to a looping WebP, uploads it to the repository's **motion-artwork** branch, and updates the same song. Missing motion covers or upload failures keep normal art. Verified album IDs share covers across guest artists.
+Normal art stays visible while a new animation is prepared. When Apple provides a supported motion cover, the app converts it to a looping WebP, uploads it to the repository's **motion-artwork** branch, and updates the same song. Missing motion covers or upload failures keep normal art. New songs are checked before reusing covers; verified album IDs share animations across songs and guest artists.
 
 Normal covers request 1024×1024 images. Motion covers use higher-resolution sources and 768×768 WebP at quality 85, reducing frame rate or size only when needed to fit the 8 MB limit. Older cached animations regenerate automatically with new URLs.
 

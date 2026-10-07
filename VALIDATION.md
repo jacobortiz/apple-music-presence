@@ -4,7 +4,7 @@ Current source checked on Windows 11 x64 with Python 3.12.14.
 
 | Check | Result |
 | --- | --- |
-| Automated suite | 149 offline tests passed, including duplicate-release cover matching, metadata comparison, retry recovery, higher-resolution artwork, and cancellation. |
+| Automated suite | 165 offline tests passed, including release-safe artwork reuse, canonical album redirects, invalid local-file recovery, and small-screen layouts with long metadata. |
 | Dependencies | `pip check` found no broken requirements. |
 | Offline preview | Headless preview worked with invalid live preferences and left saved settings unchanged. |
 | Live image checks | Apple's public catalog/CDN returned genuine 1024×1024 JPEG covers for After Hours, DATA, and the playing Fancy Some More? album. |

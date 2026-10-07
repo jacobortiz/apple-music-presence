@@ -70,6 +70,27 @@ def album_page(track_url):
     return urlunsplit(("https", "music.apple.com", url.path, "", ""))
 
 
+def _album_redirect(page, error):
+    """Allow only Apple's canonical slug for the same album and storefront."""
+    source = album_page(page)
+    if not source or error.code not in (301, 302, 307, 308):
+        return None
+    location = error.headers.get("Location") if error.headers else None
+    if not isinstance(location, str) or not location:
+        return None
+    try:
+        target = album_page(urljoin(source, location))
+    except ValueError:
+        return None
+    if not target:
+        return None
+    source_parts = urlsplit(source).path.strip("/").split("/")
+    target_parts = urlsplit(target).path.strip("/").split("/")
+    if (source_parts[0].lower(), source_parts[-1]) != (target_parts[0].lower(), target_parts[-1]):
+        return None
+    return target
+
+
 def _apple_stream(value):
     if not isinstance(value, str) or len(value) > 2048:
         return None
@@ -144,8 +165,18 @@ def find_motion(html, album_id, artist, album):
 
 
 def discover_motion(page, artist, album):
-    html = _download(page, 3 * 1024 * 1024).decode("utf-8")
-    return find_motion(html, urlsplit(page).path.rsplit("/", 1)[-1], artist, album)
+    page = album_page(page)
+    if not page:
+        raise ValueError("Motion discovery requires a verified Apple album page")
+    for attempt in range(3):
+        try:
+            html = _download(page, 3 * 1024 * 1024).decode("utf-8")
+            return find_motion(html, urlsplit(page).path.strip("/").rsplit("/", 1)[-1], artist, album)
+        except HTTPError as error:
+            target = _album_redirect(page, error)
+            if attempt == 2 or not target:
+                raise
+            page = target
 
 
 def download_video(stream, directory, stop=None):
@@ -423,8 +454,10 @@ class AutomaticArtworkResolver:
     def status(self):
         return self._statuses.get(self._current_key, "")
 
-    def _key(self, artist, album):
-        return hashlib.sha256(f"{_normalize(artist)}\0{_normalize(album)}".encode()).hexdigest()
+    def _key(self, artist, album, title=""):
+        # Metadata aliases belong to a verified song. Only Apple album IDs
+        # permit sharing the cached result across different songs or artists.
+        return hashlib.sha256(f"{_normalize(artist)}\0{_normalize(album)}\0{_normalize(title)}".encode()).hexdigest()
 
     def _album_key(self, page):
         verified = album_page(page)
@@ -435,9 +468,11 @@ class AutomaticArtworkResolver:
 
     def _load(self):
         try:
-            if self.cache_path.stat().st_size > 128 * 1024:
+            with self.cache_path.open("rb") as handle:
+                raw = handle.read(128 * 1024 + 1)
+            if len(raw) > 128 * 1024:
                 return
-            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            data = json.loads(raw.decode("utf-8"))
             if data.get("repository") != self.host.repository:
                 return
             for key, item in list(data.get("albums", {}).items())[-128:]:
@@ -456,7 +491,7 @@ class AutomaticArtworkResolver:
                 expires = float(item["expires"])
                 if time.time() < expires <= time.time() + 8 * 86400:
                     self._cache[key] = _MotionCache(cover, expires)
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
             pass
 
     def _save(self):
@@ -514,7 +549,7 @@ class AutomaticArtworkResolver:
             self._jobs.pop(key, None)
 
     async def refresh(self, title, artist, album):
-        key = self._key(artist, album)
+        key = self._key(artist, album, title)
         key = self._aliases.get(key, key)
         self._current_key = key
         cached = self._cache.get(key)
@@ -531,7 +566,7 @@ class AutomaticArtworkResolver:
     async def resolve(self, title, artist, album):
         if not artist.strip() or not album.strip():
             return await self.catalog.resolve(title, artist, album)
-        key = self._key(artist, album)
+        key = self._key(artist, album, title)
         metadata_key = key
         key = self._aliases.get(key, key)
         self._current_key = key

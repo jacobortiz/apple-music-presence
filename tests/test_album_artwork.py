@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from apple_music_presence.album_artwork import MappedArtworkResolver, _entries
 from apple_music_presence.artwork import Artwork
@@ -83,6 +83,26 @@ class AlbumArtworkTests(unittest.IsolatedAsyncioTestCase):
             path.write_text("broken json", encoding="utf-8")
             resolver = MappedArtworkResolver.load(self.catalog, path)
             self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
+
+    async def test_deeply_nested_custom_map_falls_back_without_losing_bundled_cover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "album_artwork.json"
+            path.write_text('{"version":1,"albums":' + '[' * 5000 + '[]' + ']' * 5000 + '}', encoding="utf-8")
+            resolver = MappedArtworkResolver.load(self.catalog, path)
+            self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
+            self.assertTrue((await resolver.resolve("Blinding Lights", "The Weeknd", "After Hours")).animated)
+
+    async def test_oversized_custom_map_is_rejected_before_parsing(self):
+        from apple_music_presence.album_artwork import _MAX_MAP_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "album_artwork.json"
+            path.write_text(json.dumps({"version": 1, "albums": [mapping()], "padding": "x" * _MAX_MAP_BYTES}), encoding="utf-8")
+            # Only the small bundled map reaches the parser. The oversized,
+            # otherwise valid custom mapping cannot become active.
+            with patch("apple_music_presence.album_artwork._entries", wraps=_entries) as parser:
+                resolver = MappedArtworkResolver.load(self.catalog, path)
+                parser.assert_called_once()
+                self.assertEqual(await resolver.resolve("Song", "Artist", "Album"), self.static)
 
     async def test_bundled_cover_reaches_discord_without_catalog_lookup(self):
         resolver = MappedArtworkResolver.load(self.catalog)

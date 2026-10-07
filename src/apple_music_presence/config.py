@@ -8,6 +8,9 @@ import re
 import tempfile
 
 
+_MAX_SETTINGS_BYTES = 16 * 1024
+
+
 @dataclass
 class Settings:
     client_id: str = ""
@@ -42,7 +45,11 @@ def settings_path() -> Path:
 
 def load_settings(path: Path | None = None) -> Settings:
     try:
-        data = json.loads((path or settings_path()).read_text(encoding="utf-8"))
+        with (path or settings_path()).open("rb") as handle:
+            raw = handle.read(_MAX_SETTINGS_BYTES + 1)
+        if len(raw) > _MAX_SETTINGS_BYTES:
+            return Settings()
+        data = json.loads(raw.decode("utf-8"))
         return Settings(
             client_id=data.get("client_id", "") if isinstance(data.get("client_id"), str) else "",
             artwork=data.get("artwork") is True,
@@ -51,7 +58,7 @@ def load_settings(path: Path | None = None) -> Settings:
             country=data.get("country", "US") if isinstance(data.get("country"), str) else "US",
             source_id=data.get("source_id", "") if isinstance(data.get("source_id"), str) else "",
         )
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, RecursionError):
         return Settings()
 
 

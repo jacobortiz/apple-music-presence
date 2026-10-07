@@ -10,7 +10,6 @@ from tkinter import messagebox, ttk
 import webbrowser
 
 from .config import Settings, save_settings
-from .models import PlaybackState
 from .service import ServiceStatus
 
 
@@ -26,8 +25,9 @@ class DesktopApp:
         self.settings, self.make_service, self.demo = settings, make_service, demo
         self.root = tk.Tk()
         self.root.title("Apple Music Presence" + (" — Offline preview" if demo else ""))
-        self.root.geometry("650x790")
-        self.root.minsize(590, 770)
+        height = max(420, min(790, self.root.winfo_screenheight() - 100))
+        self.root.geometry(f"650x{height}")
+        self.root.minsize(590, 420)
         self.root.configure(bg="#111318")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.events = queue.SimpleQueue()
@@ -61,8 +61,17 @@ class DesktopApp:
         style.configure("Horizontal.TProgressbar", background="#fa4d70", troughcolor="#343c4a", borderwidth=0)
 
     def _build(self):
-        main = ttk.Frame(self.root, padding=28)
-        main.pack(fill="both", expand=True)
+        viewport = ttk.Frame(self.root)
+        viewport.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(viewport, bg="#111318", highlightthickness=0, yscrollincrement=24)
+        scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        main = ttk.Frame(self.canvas, padding=28)
+        self.content = main
+        self.content_window = self.canvas.create_window((0, 0), window=main, anchor="nw")
+        main.bind("<Configure>", lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         ttk.Label(main, text="Apple Music Presence", style="Title.TLabel").pack(anchor="w")
         subtitle = "Offline preview · nothing is sent to Discord" if self.demo else "Your current track, on your Discord profile."
         ttk.Label(main, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(5, 22))
@@ -88,8 +97,9 @@ class DesktopApp:
         self.art_check = ttk.Checkbutton(main, text="Use album artwork (animated covers where available)",
                                         variable=self.artwork_enabled, command=self._toggle_artwork)
         self.art_check.pack(anchor="w", pady=(13, 2))
-        ttk.Label(main, text="For other albums, sends song, artist, and album to Apple for matching.",
-                  style="Muted.TLabel", wraplength=560).pack(anchor="w")
+        art_help = ttk.Label(main, text="For other albums, sends song, artist, and album to Apple for matching.",
+                             style="Muted.TLabel", wraplength=560)
+        art_help.pack(anchor="w")
         self.motion_enabled = tk.BooleanVar(value=self.settings.motion_artwork)
         self.motion_check = ttk.Checkbutton(main, text="Prefer animated covers whenever available",
                                             variable=self.motion_enabled, command=self._toggle_motion)
@@ -97,8 +107,9 @@ class DesktopApp:
         self.artwork_repository = tk.StringVar(value=self.settings.artwork_repository)
         self.host_entry = ttk.Entry(main, textvariable=self.artwork_repository)
         self.host_entry.pack(fill="x", pady=(2, 4))
-        ttk.Label(main, text="Public GitHub host: owner/repository. New motion covers are uploaded there using your GitHub sign-in; normal covers stay available while preparing.",
-                  style="Muted.TLabel", wraplength=560).pack(anchor="w")
+        host_help = ttk.Label(main, text="Public GitHub host: owner/repository. New motion covers are uploaded there using your GitHub sign-in; normal covers stay available while preparing.",
+                              style="Muted.TLabel", wraplength=560)
+        host_help.pack(anchor="w")
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(18, 12))
         self.start_button = ttk.Button(actions, text="Start sharing", command=self.start)
@@ -112,12 +123,43 @@ class DesktopApp:
         self.status_label.pack(anchor="w", fill="x")
         self.art_status_label = ttk.Label(main, text="", style="Muted.TLabel", wraplength=560)
         self.art_status_label.pack(anchor="w", fill="x", pady=(5, 0))
+        self._form_labels = (art_help, host_help, self.status_label, self.art_status_label)
+        self.canvas.bind("<Configure>", self._resize_content)
+        self.root.bind("<MouseWheel>", self._scroll)
+        self.root.bind("<FocusIn>", self._reveal_focus)
         if self.demo:
             self.start_button.configure(text="Start preview")
             self.id_entry.configure(state="disabled")
             self.art_check.configure(state="disabled")
             self.motion_check.configure(state="disabled")
             self.host_entry.configure(state="disabled")
+
+    def _resize_content(self, event):
+        self.canvas.itemconfigure(self.content_window, width=event.width)
+        for label in (self.song_label, self.artist_label, self.album_label):
+            label.configure(wraplength=max(200, event.width - 100))
+        for label in self._form_labels:
+            label.configure(wraplength=max(200, event.width - 56))
+
+    def _scroll(self, event):
+        if event.delta:
+            steps = -int(event.delta / 120)
+            self.canvas.yview_scroll(steps or (-1 if event.delta > 0 else 1), "units")
+        return "break"
+
+    def _reveal_focus(self, event):
+        widget = event.widget
+        if not str(widget).startswith(str(self.content) + "."):
+            return
+        top = widget.winfo_rooty() - self.content.winfo_rooty()
+        bottom = top + widget.winfo_height()
+        visible_top = self.canvas.canvasy(0)
+        visible_bottom = visible_top + self.canvas.winfo_height()
+        margin = int(self.canvas["yscrollincrement"])
+        if top < visible_top:
+            self.canvas.yview_moveto(max(0, top - margin) / self.content.winfo_height())
+        elif bottom > visible_bottom:
+            self.canvas.yview_moveto((bottom - self.canvas.winfo_height() + margin) / self.content.winfo_height())
 
     def _toggle_artwork(self):
         if not self.artwork_enabled.get():

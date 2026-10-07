@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from .artwork import Artwork, _normalize, _safe_url
 
 log = logging.getLogger(__name__)
+_MAX_MAP_BYTES = 128 * 1024
 
 
 def _animation_url(value) -> str | None:
@@ -27,7 +28,7 @@ def _animation_url(value) -> str | None:
 
 
 def _entries(text: str) -> list:
-    if len(text) > 128 * 1024:
+    if len(text) > _MAX_MAP_BYTES:
         raise ValueError("Album artwork map is too large")
     data = json.loads(text)
     if not isinstance(data, dict) or data.get("version") != 1:
@@ -36,6 +37,14 @@ def _entries(text: str) -> list:
     if not isinstance(albums, list) or len(albums) > 256:
         raise ValueError("Expected at most 256 album mappings")
     return albums
+
+
+def _read_entries(resource) -> list:
+    with resource.open("rb") as handle:
+        data = handle.read(_MAX_MAP_BYTES + 1)
+    if len(data) > _MAX_MAP_BYTES:
+        raise ValueError("Album artwork map is too large")
+    return _entries(data.decode("utf-8"))
 
 
 class MappedArtworkResolver:
@@ -75,14 +84,14 @@ class MappedArtworkResolver:
     @classmethod
     def load(cls, catalog, custom_path: Path | None = None):
         try:
-            entries = _entries(files("apple_music_presence").joinpath("album_artwork.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            entries = _read_entries(files("apple_music_presence").joinpath("album_artwork.json"))
+        except (OSError, ValueError, RecursionError):
             log.warning("Bundled album artwork map unavailable; using catalog artwork")
             entries = []
         if custom_path is not None and custom_path.exists():
             try:
-                entries += _entries(custom_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                entries += _read_entries(custom_path)
+            except (OSError, ValueError, RecursionError):
                 log.warning("Custom album artwork map invalid; ignoring it")
         return cls(catalog, entries)
 

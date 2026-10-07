@@ -165,7 +165,7 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await self.resolver.resolve("Next", "Artist", "Album"), shared)
                 self.assertEqual(await self.resolver.refresh("Song", "Artist", "Album"), shared)
                 self.assertFalse(self.resolver._jobs)
-                self.catalog.resolve_album.assert_awaited_once()
+                self.assertEqual(self.catalog.resolve_album.await_count, 2)
                 discover.assert_not_called()
                 publish.assert_not_called()
 
@@ -277,10 +277,23 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
                     await self.finish_job()
         self.catalog.resolve_album.return_value = Artwork(STATIC.url, "https://music.apple.com/us/album/album/999")
         with patch("apple_music_presence.motion_artwork.discover_motion", return_value=None):
-            cover = await self.resolver.resolve("Other", "Unrelated Artist", "Album")
+            cover = await self.resolver.resolve("Other", "Artist", "Album")
             self.assertFalse(cover.animated)
             self.assertIn("999", cover.track_url)
             await self.finish_job()
+
+    async def test_ambiguous_next_song_does_not_inherit_previous_motion_cover(self):
+        self.catalog.resolve_album.return_value = None
+        self.catalog.resolve.side_effect = [STATIC, None]
+        with patch("apple_music_presence.motion_artwork.discover_motion", return_value=STREAM):
+            with patch("apple_music_presence.motion_artwork.convert_motion", new_callable=AsyncMock, return_value=b"bytes"):
+                with patch.object(self.host, "publish", return_value=PUBLIC):
+                    await self.resolver.resolve("First", "Artist", "Album")
+                    await self.finish_job()
+                    self.assertTrue((await self.resolver.refresh("First", "Artist", "Album")).animated)
+                    self.assertIsNone(await self.resolver.resolve("Shared", "Artist", "Album"))
+                    self.assertFalse(self.resolver._jobs)
+                    self.assertEqual(self.catalog.resolve.await_count, 2)
 
     async def test_upload_failure_keeps_static_and_retries_after_short_delay(self):
         with patch("apple_music_presence.motion_artwork.time.time", return_value=100) as clock:
@@ -326,6 +339,17 @@ class MotionResolverTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_from_different_host_is_ignored(self):
         self.cache.write_text(json.dumps({"repository": "other/repo", "albums": {}}))
         self.assertFalse(AutomaticArtworkResolver(self.catalog, self.host, self.cache)._cache)
+
+    async def test_invalid_motion_cache_does_not_prevent_startup(self):
+        deeply_nested = b'{"ignored":' + b'[' * 5000 + b'[]' + b']' * 5000 + b'}'
+        for content in (deeply_nested, b'\xff', b'[]'):
+            with self.subTest(content_size=len(content)):
+                self.cache.write_bytes(content)
+                self.assertFalse(AutomaticArtworkResolver(self.catalog, self.host, self.cache)._cache)
+        self.cache.write_bytes(b' ' * (128 * 1024 + 1))
+        with patch("apple_music_presence.motion_artwork.json.loads") as parser:
+            self.assertFalse(AutomaticArtworkResolver(self.catalog, self.host, self.cache)._cache)
+            parser.assert_not_called()
 
     async def test_cached_album_buttons_cannot_share_a_saved_query_token(self):
         import time

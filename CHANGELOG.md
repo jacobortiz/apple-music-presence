@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Verify each new song before reusing artwork, avoiding incorrect covers for songs shared across releases.
+- Follow canonical Apple album redirects for motion covers, with strict album and storefront checks.
+- Recover safely from oversized or deeply nested local preferences, artwork maps, and motion caches.
+- Keep controls reachable on small screens and with long metadata using scrolling and responsive text wrapping.
 - Recover normal artwork for duplicate catalog releases with identical covers, including After Hours (Deluxe), without choosing an uncertain album link or animation.
 - Sharpen normal covers to 1024×1024 and motion covers to 768×768 at higher quality; refresh older cached animations with new URLs.
 - Show the current artist in the member list while retaining the Apple Music profile heading.
