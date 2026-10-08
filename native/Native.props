@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)..\build\native\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\build\native\obj\$(MSBuildProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)include;$(MSBuildThisFileDirectory)vendor;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <Optimization>MaxSpeed</Optimization>
+      <WarningLevel>Level4</WarningLevel>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalOptions>/utf-8 /permissive- /UNDEBUG %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>windowsapp.lib;runtimeobject.lib;winhttp.lib;normaliz.lib;shell32.lib;user32.lib;gdi32.lib;ole32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\settings.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\presence.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\media.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\discord_rpc.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\artwork.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)src\service.cpp" />
+  </ItemGroup>
+</Project>

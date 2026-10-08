@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a native C++ tray preview with event-driven detection, Discord IPC, optional artwork, separate settings, and optional Windows startup.
 - Verify each new song before reusing artwork, avoiding incorrect covers for songs shared across releases.
 - Follow canonical Apple album redirects for motion covers, with strict album and storefront checks.
 - Recover safely from oversized or deeply nested local preferences, artwork maps, and motion caches.
