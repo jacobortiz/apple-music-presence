@@ -2,6 +2,7 @@
 
 #include <amp/http.hpp>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -14,6 +15,9 @@ class GithubArtworkHost {
 public:
     explicit GithubArtworkHost(std::string repository, HostHttp http = {},
                                CredentialProvider credentials = {});
+    // Public, read-only lookup; never requests upload credentials.
+    std::optional<std::string> find_hosted(std::string_view album_id, std::string_view stream,
+                                         HANDLE stop = nullptr);
     std::string publish(std::string_view album_id, std::string_view stream,
                         std::string_view content, HANDLE stop = nullptr);
     const std::string& repository() const noexcept { return repository_; }

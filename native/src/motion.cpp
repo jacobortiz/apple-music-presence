@@ -467,7 +467,8 @@ std::string convert_motion(std::string_view stream, const std::filesystem::path&
                            const std::filesystem::path& temp_parent, HANDLE stop) {
     checkpoint(stop);
     if (!motion_detail::apple_stream(stream)) throw std::runtime_error("Invalid Apple motion stream");
-    if (ffmpeg.empty() || !std::filesystem::is_regular_file(ffmpeg)) throw std::runtime_error("FFmpeg is unavailable");
+    const auto encoder = ffmpeg.empty() ? ffmpeg_executable(app_directory()) : ffmpeg;
+    if (!std::filesystem::is_regular_file(encoder)) throw std::runtime_error("FFmpeg is unavailable");
     TemporaryDirectory temporary(temp_parent);
     const auto local = download_video(stream, temporary.path(), stop);
     const auto output = temporary.path() / L"cover.webp";
@@ -478,7 +479,7 @@ std::string convert_motion(std::string_view stream, const std::filesystem::path&
         if (remaining.count() <= 0) throw std::runtime_error("Motion conversion timed out");
         const auto filter = L"fps=" + std::to_wstring(fps) + L",scale=" + std::to_wstring(size) + L":" +
             std::to_wstring(size) + L":flags=lanczos,setpts=PTS-STARTPTS";
-        const auto result = run_process(ffmpeg,
+        const auto result = run_process(encoder,
             {L"-hide_banner", L"-loglevel", L"error", L"-nostdin", L"-y", L"-protocol_whitelist", L"file",
              L"-allowed_extensions", L"ALL", L"-i", local.wstring(), L"-map", L"0:v:0", L"-vf", filter,
              L"-t", L"60", L"-map_metadata", L"-1", L"-map_metadata:s:v", L"-1", L"-map_chapters", L"-1",
@@ -504,7 +505,6 @@ std::optional<PreparedMotion> prepare_motion(std::string_view verified_page, std
                                             const std::filesystem::path& temp_parent, HANDLE stop) {
     const auto stream = discover_motion(verified_page, album, stop);
     if (!stream) return {};
-    const auto encoder = ffmpeg.empty() ? ffmpeg_executable(app_directory()) : ffmpeg;
-    return PreparedMotion{*stream, convert_motion(*stream, encoder, temp_parent, stop)};
+    return PreparedMotion{*stream, convert_motion(*stream, ffmpeg, temp_parent, stop)};
 }
 }

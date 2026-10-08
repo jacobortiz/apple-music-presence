@@ -78,15 +78,17 @@ public:
     std::vector<Step> steps;
     std::size_t index{};
     unsigned credentials{};
+    bool public_only{};
     amp::HostHttp http() {
         return [&](std::string_view url, std::size_t limit, std::string_view method,
                    std::string_view body, std::string_view token, HANDLE) {
             require(index < steps.size(), "Unexpected GitHub request.");
             const auto& step = steps[index++];
             require(url == step.url && method == step.method, "Unexpected GitHub URL or mutation.");
-            const bool authenticated = url.starts_with("https://api.github.com/");
+            const bool api_request = url.starts_with("https://api.github.com/");
+            const bool authenticated = api_request && !public_only;
             require(token == (authenticated ? "test-only-token" : ""), "Credentials escaped the GitHub API.");
-            require(limit <= (authenticated ? 256 * 1024 : amp::max_motion_image_bytes), "HTTP limit is unbounded.");
+            require(limit <= (api_request ? 256 * 1024 : amp::max_motion_image_bytes), "HTTP limit is unbounded.");
             if (step.check) step.check(Json::parse(body));
             else require(body.empty(), "Unexpected public request body.");
             return step.reply;
@@ -111,6 +113,61 @@ void check_upload(const Json& body) {
             "Upload did not use the verified no-reply identity.");
     require(body.at("content") == "UklGRlQAAABXRUJQVlA4WAoAAAACAAAAAAAAAAAAQU5JTQYAAAAAAAAAAABBTk1GEAAAAAAAAAAAAAAAAAAAAAAAAABBTk1GEAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             "Upload did not contain exactly the verified animation bytes.");
+}
+
+void test_public_lookup() {
+    Transport existing{{{ref, "GET", reference(sha_a)}, {raw(sha_a), "GET", {200, animation(), {}}}}};
+    existing.public_only = true;
+    amp::GithubArtworkHost host(std::string(repository), existing.http(), existing.provider());
+    require(host.find_hosted("123", stream) == raw(sha_a), "Public cover lookup did not return an immutable URL.");
+    require(existing.credentials == 0, "Public lookup requested credentials.");
+    existing.finished();
+    for (const auto reply : {amp::HttpResponse{404, "", {}}, amp::HttpResponse{429, "", {}},
+                            amp::HttpResponse{200, "invalid JSON", {}}, reference("heads/main"),
+                            amp::HttpResponse{200, std::string(256 * 1024 + 1, ' '), {}}}) {
+        Transport missing{{{ref, "GET", reply}}};
+        missing.public_only = true;
+        amp::GithubArtworkHost lookup(std::string(repository), missing.http(), missing.provider());
+        require(!lookup.find_hosted("123", stream), "Unavailable or invalid public branch should be a miss.");
+        require(missing.credentials == 0, "Failed public lookup requested credentials.");
+        missing.finished();
+    }
+    for (const auto reply : {amp::HttpResponse{404, "", {}}, amp::HttpResponse{200, "static WebP", {}},
+                            amp::HttpResponse{200, std::string(amp::max_motion_image_bytes + 1, ' '), {}}}) {
+        Transport missing{{{ref, "GET", reference(sha_a)}, {raw(sha_a), "GET", reply}}};
+        missing.public_only = true;
+        amp::GithubArtworkHost lookup(std::string(repository), missing.http(), missing.provider());
+        require(!lookup.find_hosted("123", stream), "Invalid public image should be a miss.");
+        missing.finished();
+    }
+    Transport invalid;
+    amp::GithubArtworkHost lookup(std::string(repository), invalid.http(), invalid.provider());
+    must_fail([&] { lookup.find_hosted("../123", stream); });
+    must_fail([&] { lookup.find_hosted("123", "https://attacker.example/main.m3u8"); });
+    const auto stop = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+    require(stop != nullptr, "Could not create cancellation event.");
+    try {
+        must_fail([&] { lookup.find_hosted("123", stream, stop); });
+        require(invalid.credentials == 0 && invalid.index == 0, "Invalid/cancelled lookup accessed network or credentials.");
+        ResetEvent(stop);
+        Transport cancelled{{{ref, "GET", reference(sha_a)}}};
+        cancelled.public_only = true;
+        const auto fake = cancelled.http();
+        amp::GithubArtworkHost during_read(std::string(repository),
+            [&](auto url, auto limit, auto method, auto body, auto token, auto event) {
+                const auto reply = fake(url, limit, method, body, token, event);
+                SetEvent(stop);
+                return reply;
+            }, cancelled.provider());
+        must_fail([&] { during_read.find_hosted("123", stream, stop); });
+        cancelled.finished();
+    } catch (...) { CloseHandle(stop); throw; }
+    CloseHandle(stop);
+    amp::GithubArtworkHost failure(std::string(repository), [](auto, auto, auto, auto, auto, auto) -> amp::HttpResponse {
+        throw std::runtime_error("test-only-token");
+    }, invalid.provider());
+    require(!failure.find_hosted("123", stream), "Public transport failure must permit normal preparation.");
+    require(invalid.credentials == 0, "Public transport failure accessed credentials.");
 }
 
 void test_existing_cover() {
@@ -243,6 +300,7 @@ void test_artwork_host() {
         require(!amp::host_detail::valid_repository(invalid), "Unsafe repository was accepted.");
     require(amp::host_detail::motion_filename("123", stream) == filename, "Keep motion filenames compatible with existing cached hashes.");
     test_existing_cover();
+    test_public_lookup();
     test_create_branch_and_upload();
     test_branch_and_upload_races();
     test_permissions_and_validation();

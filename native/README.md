@@ -24,6 +24,7 @@ Tests use fake Discord pipes, public-catalog/hosting fixtures, and isolated chil
 - `DiscordRpc` uses [Discord's documented local RPC](https://docs.discord.com/developers/topics/rpc). Pause, stop, and exit clear the activity.
 - `ArtworkResolver` checks exact song metadata, exact artist/full album edition, then public Apple Music pages. Identical duplicate covers can share display artwork; uncertain releases omit album links and animation.
 - Background artwork/motion workers keep lookup, encoding, and upload work off the UI thread. Downloads and conversion are bounded; exit cancels work.
+- Verified public motion covers are reused before conversion or credential access. UI status changes drive refreshes without a periodic redraw timer.
 
 Dependencies are Windows SDK C++/WinRT, Win32, WinHTTP, BCrypt, and vendored [nlohmann/json 3.12.0](https://github.com/nlohmann/json/releases/tag/v3.12.0) under [MIT](vendor/nlohmann/LICENSE.MIT). FFmpeg is optional and runs only for new animations; Git credential lookup runs only for publication. See [third-party notices](../THIRD_PARTY_NOTICES.txt).
 

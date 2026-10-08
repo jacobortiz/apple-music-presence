@@ -16,6 +16,7 @@ struct PreparedMotion { std::string stream, webp; };
 
 std::optional<std::string> discover_motion(std::string_view verified_page,
                                          std::string_view album, HANDLE stop = nullptr);
+// An empty FFmpeg path resolves the optional converter beside the app or on PATH.
 std::string convert_motion(std::string_view stream, const std::filesystem::path& ffmpeg,
                            const std::filesystem::path& temp_parent, HANDLE stop = nullptr);
 std::optional<PreparedMotion> prepare_motion(std::string_view verified_page,

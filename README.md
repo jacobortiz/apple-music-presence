@@ -19,14 +19,14 @@ Apple Music, Discord desktop, and this app must run on the same computer. iPhone
 
 ## Animated covers
 
-Close the app and double-click **Install-MotionSupport.cmd** in the ZIP once. It downloads and verifies an optional FFmpeg converter directly from its Windows build provider. Restart the app, enable **Prefer animated covers when available**, and enter a public GitHub repository as `owner/repository`.
+Enable **Prefer animated covers when available** and enter a public GitHub repository as `owner/repository`. To prepare new covers, close the app and double-click **Install-MotionSupport.cmd** in the ZIP once, then restart. It downloads and verifies an optional FFmpeg converter directly from its Windows build provider.
 
 Configure write access through either:
 
 - Your existing Git for Windows credential helper sign-in.
 - A fine-grained token with **Contents: read and write**, supplied through `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN`. Keep it out of settings and Git.
 
-Normal art stays visible while a new animation is prepared. The app converts Apple's supported motion cover to a looping WebP, publishes it to the repository's **motion-artwork** branch, and updates the current song. Missing motion or preparation/upload failures keep normal art. FFmpeg runs only during conversion; normal artwork and already-hosted animations work without it.
+Normal art stays visible while an animation is found or prepared. The app first checks for the current motion cover on the repository's **motion-artwork** branch; verified public covers need neither FFmpeg nor GitHub sign-in. New covers are converted to looping WebP, published using your write access, and applied to the current song. Missing motion or preparation/upload failures keep normal art. FFmpeg runs only during conversion.
 
 New songs are verified before reusing covers. Exact artist and full album titles keep editions separate; verified album IDs share animations across songs and guest artists. Normal covers request 1024px images; animations use 768px at quality 85, reducing frame rate or size only to fit the 8 MB limit.
 

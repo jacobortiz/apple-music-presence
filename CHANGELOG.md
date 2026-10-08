@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reuse verified public animations before conversion or sign-in; share one encoding profile and remove the unused duplicate catalog matcher.
+- Reconcile Windows startup with the current executable when saving, and remove redundant periodic settings refreshes.
 - Replace the Python app with the C++20 tray app; remove Python source, tests, dependencies, and build files.
 - Add event-driven media detection, Discord IPC, reconnects, pause/stop clearing, and optional Windows startup.
 - Show the current artist in the member list while retaining the Apple Music profile heading; send changed activities at most every five seconds.
