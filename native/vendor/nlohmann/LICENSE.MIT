@@ -1,16 +1,6 @@
-Apple Music Presence - third-party notices
+MIT License
 
-This file describes third-party components, not a license for the application.
-
-nlohmann/json 3.12.0
 Copyright (c) 2013-2025 Niels Lohmann
-MIT license: native/vendor/nlohmann/LICENSE.MIT (source)
-or licenses/nlohmann-json-MIT.txt (download ZIP)
-https://github.com/nlohmann/json/releases/tag/v3.12.0
-
-C++/WinRT 2.0.220110.5 (Windows SDK 10.0.22621.0 headers)
-Copyright (c) Microsoft Corporation. All rights reserved.
-MIT license:
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -29,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Optional FFmpeg
-FFmpeg is not included in this ZIP. Install-MotionSupport.cmd downloads a
-SHA256-verified FFmpeg 9.0.2 Windows x64 build directly from Gyan's public
-release. That separate build is GPL v3 and has its own dependencies; the
-installer preserves the provider's LICENSE, README, and exact provenance
-in ffmpeg-notices. Keep those files with an installed converter.
-https://ffmpeg.org/download.html
-https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2

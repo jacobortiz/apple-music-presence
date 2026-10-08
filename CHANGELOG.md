@@ -2,20 +2,17 @@
 
 ## Unreleased
 
-- Verify each new song before reusing artwork, avoiding incorrect covers for songs shared across releases.
-- Follow canonical Apple album redirects for motion covers, with strict album and storefront checks.
-- Recover safely from oversized or deeply nested local preferences, artwork maps, and motion caches.
-- Keep controls reachable on small screens and with long metadata using scrolling and responsive text wrapping.
-- Recover normal artwork for duplicate catalog releases with identical covers, including After Hours (Deluxe), without choosing an uncertain album link or animation.
-- Sharpen normal covers to 1024×1024 and motion covers to 768×768 at higher quality; refresh older cached animations with new URLs.
-- Show the current artist in the member list while retaining the Apple Music profile heading.
-- Prefer motion covers, with public Apple Music page fallback and album caching across guest artists.
-- Reduce changed-activity updates to a five-second interval and retry missing artwork during playback.
-- Keep sharing alive after optional artwork failures; show accurate paused artwork status.
-- Ignore unrelated Discord command errors, stop artwork work promptly on shutdown, and bound cached status entries.
-- Fix offline preview validation and concurrent settings saves; add regression tests.
+- Replace the Python app with the C++20 tray app; remove Python source, tests, dependencies, and build files.
+- Add event-driven media detection, Discord IPC, reconnects, pause/stop clearing, and optional Windows startup.
+- Show the current artist in the member list while retaining the Apple Music profile heading; send changed activities at most every five seconds.
+- Match exact songs, artists, and album editions, with album/public-page fallback and strict duplicate-cover comparison.
+- Prepare and host animated covers in the background, updating the current song while preserving normal art on failure.
+- Request 1024px normal artwork and 768px motion covers, with bounded conversion, caching, downloads, and cancellation.
+- Package a portable x64 ZIP with a verified optional FFmpeg installer, focused notices, and private-path checks.
 
 ## 0.1.1
+
+Historical Python release; replaced by the C++ app above.
 
 - Read the current native Apple Music track on Windows and display a Discord Listening activity with title, artist, album, and playback timestamps.
 - Normalize Apple's combined `Artist — Album` metadata when the album field is empty, fixing artwork matching for affected tracks.

@@ -1,16 +1,18 @@
 # Validation
 
-Current source checked on Windows 11 x64 with Python 3.12.14.
+The native Windows app was checked on Windows 11 x64 with Visual Studio 2022, MSVC 14.44, and Windows SDK 10.0.22621.0.
 
 | Check | Result |
 | --- | --- |
-| Automated suite | 165 offline tests passed, including release-safe artwork reuse, canonical album redirects, invalid local-file recovery, and small-screen layouts with long metadata. |
-| Dependencies | `pip check` found no broken requirements. |
-| Offline preview | Headless preview worked with invalid live preferences and left saved settings unchanged. |
-| Live image checks | Apple's public catalog/CDN returned genuine 1024×1024 JPEG covers for After Hours, DATA, and the playing Fancy Some More? album. |
-| Motion conversion | After Hours converted to a valid 768×768, 300-frame looping WebP at quality 85; 5,484,884 bytes, within the 8 MB upload limit. |
-| Deluxe lookup | After Hours (Deluxe) and Nothing Compares (Bonus Track) resolved to a verified 1024×1024 shared catalog cover. Ambiguous release links and motion uploads were omitted. |
+| Build | Clean x64 C++20 Release build with a static runtime. No private source paths in the executable; test assertions remain enabled. |
+| Automated tests | Eleven groups passed, covering media/IPC, exact song/album/page matching, duplicate JPEGs, bounded HLS/WebP, credentials and hosting, same-song upgrades, reconnects, and cancellation. |
+| Album fallback | Fixtures cover unmatched titles, album caching, strict artist/edition matching, ambiguity, temporary failures, and cancellation. A live public Apple lookup found the exact album after an intentionally unmatched song title. |
+| Motion | Live Apple motion discovery, metadata-free WebP conversion, public GitHub publication, and immutable image verification passed. |
+| Portable package | Six public files only; executable matches the tested build, without private profile/PDB paths. Optional FFmpeg 9.0.2 setup passed download, hash/encoder checks, reinstall, and corrupt-archive cleanup on Windows PowerShell 5.1. Live conversion produced a valid 5,508,920-byte animated WebP. |
+| Tray lifecycle | Offline window appeared, Save hid it to the tray, and timed exit succeeded. Preferences, motion cache, and startup registration were unchanged. |
+| Media | Read-only detection found a paused Apple Music track with title, artist, album, position, and duration present. |
+| Discord | Live IPC handshake and explicit clear were acknowledged. A playing native profile card has not yet been visually verified. |
 
-Earlier live checks verified native Apple Music metadata/progress, catalog artwork, and Discord acknowledgements for the Apple Music heading, artist status, and cover without a logo badge. Discord controls final image rendering; test that visually on your profile.
+A nine-second offline, windowless preview used 10.78 MiB working memory and 1.62 MiB private memory. CPU time stayed below timer resolution during the four-second sample. This is a short preview measurement, not a long-running live/artwork benchmark.
 
-The released v0.1.1 executable passed build, preview, and media checks during its development. It predates the current source features and fixes; a new build is needed to include them.
+Discord controls final profile rendering, image caching, and animation playback. Verify those visually on your profile. See [setup](README.md#setup) and [build/test instructions](native/README.md).

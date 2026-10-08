@@ -1,46 +1,36 @@
 # Apple Music Presence
 
-A Windows desktop app that shares the current Apple Music track on Discord.
+A lightweight C++ tray app for Windows that shares the current Apple Music track on Discord.
 
 - **Member list:** the current artist.
 - **Profile:** “Listening to Apple Music,” song, artist, album cover, and playback progress. Hover the cover for the album name.
 - Optional animated covers, with normal artwork as fallback.
-- Clears on pause/stop and reconnects when Discord or Apple Music restarts.
-
-Apple Music, Discord desktop, and this app must run on the same computer. iPhone-only playback and Spotify's Listen Along are unsupported. Discord controls the profile layout and heading icon; Rich Presence cannot place a custom monochrome Apple logo beside the heading. The app sends no logo badge over the cover.
+- Clears on pause/stop and reconnects when Apple Music or Discord restarts.
 
 ## Setup
 
-Use Windows 10/11 and 64-bit Python 3.12 with Tcl/Tk (included by python.org).
+1. [Download the Windows x64 ZIP](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1) and extract it to a permanent folder. Requires Windows 10 1809 or newer; no compiler or runtime installation is needed.
+2. Open Apple Music and Discord desktop. Create an **Apple Music** application in the [Discord Developer Portal](https://discord.com/developers/applications) and copy its **Application ID**. No bot or Discord token is needed.
+3. Run **AppleMusicPresenceNative.exe**, enter the ID, optionally enable artwork, and choose **Save**. Enable activity sharing in Discord's Activity Privacy settings.
 
-1. Open the native Apple Music app and Discord desktop.
-2. Create an **Apple Music** application in the [Discord Developer Portal](https://discord.com/developers/applications). Copy its **Application ID**; no bot or Discord token is needed.
-3. Open PowerShell in this folder:
+Closing settings keeps sharing. Open the music-note tray icon to change settings; right-click it to pause/resume or exit. **Start with Windows** is optional; disable it before moving the extracted folder. Run one presence app per Application ID.
 
-   ```powershell
-   py -3.12 -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install -e .
-   .\.venv\Scripts\python.exe -m apple_music_presence
-   ```
-
-4. Paste the ID, optionally enable artwork, and choose **Start sharing**. Enable activity sharing in Discord's Activity Privacy settings.
-
-After installation, use `launch.cmd`. Add `--start` to the Python command to share immediately with saved settings. Closing the window stops sharing; minimizing keeps it running.
-
-The existing **v0.1.1 executable is older than these features**. Use current source or build a new executable below.
+Apple Music, Discord desktop, and this app must run on the same computer. iPhone-only playback and Spotify's Listen Along are unsupported. Discord controls the profile layout and heading icon; the app adds no logo badge over the cover.
 
 ## Animated covers
 
-Enable **Prefer animated covers whenever available** and enter a public GitHub repository as `owner/repository`. Configure write access through either:
+Close the app and double-click **Install-MotionSupport.cmd** in the ZIP once. It downloads and verifies an optional FFmpeg converter directly from its Windows build provider. Restart the app, enable **Prefer animated covers when available**, and enter a public GitHub repository as `owner/repository`.
+
+Configure write access through either:
 
 - Your existing Git for Windows credential helper sign-in.
 - A fine-grained token with **Contents: read and write**, supplied through `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN`. Keep it out of settings and Git.
 
-Normal art stays visible while a new animation is prepared. When Apple provides a supported motion cover, the app converts it to a looping WebP, uploads it to the repository's **motion-artwork** branch, and updates the same song. Missing motion covers or upload failures keep normal art. New songs are checked before reusing covers; verified album IDs share animations across songs and guest artists.
+Normal art stays visible while a new animation is prepared. The app converts Apple's supported motion cover to a looping WebP, publishes it to the repository's **motion-artwork** branch, and updates the current song. Missing motion or preparation/upload failures keep normal art. FFmpeg runs only during conversion; normal artwork and already-hosted animations work without it.
 
-Normal covers request 1024×1024 images. Motion covers use higher-resolution sources and 768×768 WebP at quality 85, reducing frame rate or size only when needed to fit the 8 MB limit. Older cached animations regenerate automatically with new URLs.
+New songs are verified before reusing covers. Exact artist and full album titles keep editions separate; verified album IDs share animations across songs and guest artists. Normal covers request 1024px images; animations use 768px at quality 85, reducing frame rate or size only to fit the 8 MB limit.
 
-Animations are cached for seven days, no-motion results for one day, and temporary motion failures retry after a minute. Public commits reveal album IDs, upload times, and the publishing account. New uploads use GitHub's no-reply email; older commit metadata is unchanged.
+Animations cache for seven days, no-motion results for one day, and temporary motion failures retry after a minute. Public artwork commits reveal album IDs, upload times, and the publishing account, using GitHub's no-reply email.
 
 For an already-hosted cover, create `%LOCALAPPDATA%\AppleMusicPresence\album_artwork.json`:
 
@@ -56,36 +46,19 @@ For an already-hosted cover, create `%LOCALAPPDATA%\AppleMusicPresence\album_art
 }
 ```
 
-URLs must be public HTTPS with no query or fragment; images must end in `.webp`, `.gif`, or `.avif`. Matching preserves album editions and artist names. Restart after editing. [Bundled artwork provenance](artwork/README.md).
+URLs must be public HTTPS without queries or fragments; images must end in `.webp`, `.gif`, or `.avif`. Restart after editing. See [bundled artwork provenance](artwork/README.md).
 
 ## Troubleshooting and privacy
 
-- Detection polls every second; changed activities are sent at most every five seconds. Discord may take longer to display them.
-- Artwork uses exact Apple catalog matches, with public Music pages as fallback. Duplicate releases can share verified identical normal covers; an uncertain release omits the album link and animation. Missing tags, different covers, network failures, and Apple page changes can prevent artwork. Failed lookups retry during playback.
-- No timeline means no progress bar. Discord controls animation playback and button visibility; check buttons from another account.
-- Use `--demo` for an offline preview, `--diagnose` to inspect local media metadata, or `--verbose` for troubleshooting. `--source-id` selects an exact media session if needed. Run one instance per Application ID.
-- Artwork opt-in sends song metadata to Apple's public services. Motion opt-in uploads public cover images to GitHub. No local music, browser cookies, Apple passwords, Discord tokens, or telemetry are collected.
-- Preferences, motion cache, and custom mappings stay in `%LOCALAPPDATA%\AppleMusicPresence`. No per-song history is saved; cached albums and public artwork commits can reveal prepared albums. Credentials, settings, caches, and logs are excluded from Git.
-- Downloads are limited to approved Apple/GitHub hosts. Only verified same-album Apple page redirects are allowed. GitHub credentials stay on its API; uploads reject embedded image metadata.
-
-Headless example (uses saved settings):
-
-```powershell
-.\.venv\Scripts\python.exe -m apple_music_presence --headless --artwork
-```
-
-Use `--client-id YOUR_APPLICATION_ID` to override the saved ID, `--country GB` to change storefront, or `--no-artwork` to disable artwork. Ctrl+C clears the activity and exits.
+- Detection uses Windows media events. Changed activities are sent at most every five seconds; Discord can take longer to display them.
+- Artwork checks the exact song, then the exact artist and album edition, then public Apple Music pages. Uncertain releases omit the album link and animation. Failed lookups retry during playback.
+- Missing timeline data means no progress bar. Discord controls animation playback and button visibility; check buttons from another account.
+- Artwork opt-in sends track tags to Apple's public services. Motion opt-in uploads metadata-free public covers to GitHub. No local music files, browser cookies, Apple passwords, Discord tokens, telemetry, or per-song history are collected.
+- Settings, custom mappings, and the bounded motion cache stay in `%LOCALAPPDATA%\AppleMusicPresence`. Cached albums and public artwork commits can reveal prepared albums. Credentials stay in memory and reach only GitHub's API.
+- Existing settings and verified artwork caches from earlier versions remain compatible.
 
 ## Development
 
-The backend-neutral `Track` / `MediaSnapshot` contract separates Windows detection from Discord. A future C++ adapter can implement `MediaBackend.read()` and `close()` and replace the backend in `app.make_service()`. Network and IPC work run off the UI thread.
+The app uses C++20, C++/WinRT media sessions, and Discord's documented local RPC. Artwork and motion work run off the UI thread. JSON is vendored under MIT; FFmpeg is an optional separate executable.
 
-Detection uses Microsoft's [Windows media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessionmanager) via PyWinRT. Discord uses [local RPC](https://docs.discord.com/developers/topics/rpc) through pypresence; [status display type](https://docs.discord.com/developers/discord-social-sdk/development-guides/setting-rich-presence#configuring-status-text) keeps the artist in the member list. Artwork uses [Apple's Search API](https://performance-partners.apple.com/search-api) and public album pages; imageio-ffmpeg converts motion covers and [GitHub's Contents API](https://docs.github.com/en/rest/repos/contents) hosts them. Dependencies are pinned in `pyproject.toml`.
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m pip install '.[build]'
-.\.venv\Scripts\python.exe build_windows.py
-```
-
-The build produces `dist/AppleMusicPresence.exe`, bundling Python and Tcl/Tk. See `THIRD_PARTY_NOTICES.txt` for licenses. Tests use offline fixtures; live verification covers Windows detection, Discord acknowledgements, and artwork lookup. Check final profile appearance in Discord.
+See [native build, tests, and packaging](native/README.md), [third-party notices](THIRD_PARTY_NOTICES.txt), [validation](VALIDATION.md), and [changelog](CHANGELOG.md).

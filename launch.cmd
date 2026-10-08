@@ -1,9 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\pythonw.exe" (
-    echo Run the setup commands in README.md first to create .venv and install the app.
+set "presence_exe=%~dp0AppleMusicPresenceNative.exe"
+if not exist "%presence_exe%" set "presence_exe=%~dp0build\native\Release\AppleMusicPresenceNative.exe"
+if not exist "%presence_exe%" (
+    echo Download and extract the Windows ZIP from the GitHub releases page,
+    echo or build the app with native\build.ps1. See README.md for instructions.
     pause
     exit /b 1
 )
-start "Apple Music Presence" ".venv\Scripts\pythonw.exe" -m apple_music_presence
+start "Apple Music Presence" "%presence_exe%" %*

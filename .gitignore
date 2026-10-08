@@ -4,6 +4,11 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.vs/
+*.vcxproj.user
+*.obj
+*.pdb
+*.ilk
 .pytest_cache/
 .ruff_cache/
 *.spec
@@ -12,6 +17,7 @@ dist/
 .env
 .env.*
 settings.json
+native_settings.json
 motion_cache.json
 album_artwork.local.json
 *.pem
