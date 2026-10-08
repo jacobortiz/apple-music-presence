@@ -178,6 +178,23 @@ std::vector<Artwork> song_candidates(std::string_view payload, const Track& trac
     }
     return result;
 }
+std::vector<Artwork> album_candidates(std::string_view payload, std::string_view artist, std::string_view album) {
+    if (!valid_text(artist) || !valid_text(album)) return {};
+    const auto data = parse(payload, max_catalog);
+    if (!data.is_object() || !data.contains("results") || !data["results"].is_array()) return {};
+    const auto artist_key = artwork_detail::normalize(artist), album_key = artwork_detail::normalize(album);
+    std::vector<Artwork> result;
+    for (const auto& row : data["results"]) {
+        if (!row.is_object() || field(row, "collectionType", 16) != "Album") continue;
+        const auto row_artist = field(row, "artistName"), row_album = field(row, "collectionName");
+        if (!valid_text(row_artist) || !valid_text(row_album)
+            || artwork_detail::normalize(row_artist) != artist_key || artwork_detail::normalize(row_album) != album_key) continue;
+        const auto image = artwork_detail::thumbnail(field(row, "artworkUrl100", 2048));
+        const auto page = field(row, "collectionViewUrl", 2048);
+        if (image && apple_store_url(page)) unique_add(result, {*image, page, false});
+    }
+    return result;
+}
 std::optional<Artwork> known_cover(const std::vector<Artwork>& candidates) {
     if (candidates.size() == 1) return candidates.front();
     if (candidates.size() > 1 && candidates.size() <= 4 && std::all_of(candidates.begin(), candidates.end(),

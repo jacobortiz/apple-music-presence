@@ -21,8 +21,11 @@ Checked on the same Windows host with Visual Studio 2022, MSVC 14.44, and Window
 
 | Check | Result |
 | --- | --- |
-| Native build | Clean x64 C++20 Release build; executable is 711,680 bytes, with a static C++ runtime and no Python dependency. |
-| Native regressions | Core settings/presence, media, fake Discord pipes, artwork, and background-service checks passed. Assertions remain enabled in the test build. |
+| Native build | Clean x64 C++20 Release build with a static C++ runtime and no Python dependency. Release assertions do not embed private source paths; test assertions remain enabled. |
+| Native regressions | Eleven groups passed, covering media/IPC, exact song/album/page matching, duplicate JPEGs, bounded HLS/WebP, credentials and hosting, same-song upgrades, reconnects, and cancellation. |
+| Album fallback | Offline fixtures cover unmatched titles, shared album caching, strict artist/edition matching, ambiguity, temporary failures, and cancellation. A live public Apple lookup found the exact album after an intentionally unmatched song title. |
+| Native motion | Live Apple motion discovery, metadata-free WebP conversion, public GitHub publication, and immutable image verification passed. FFmpeg runs only for new animations. |
+| Portable package | Six public files only; bundled executable matches the tested build. No private profile/PDB paths. Optional FFmpeg 9.0.2 setup passed direct download, hash/encoder checks, reinstall, and corrupt-archive cleanup on Windows PowerShell 5.1; live conversion produced a valid 5,508,920-byte animated WebP. |
 | Tray lifecycle | Offline window appeared, Save hid it to the tray, and timed exit succeeded. Preferences, motion cache, and startup registration were unchanged. |
 | Native media | Read-only detection found the paused Apple Music track with title, artist, album, position, and duration present. |
 | Native Discord | Live IPC handshake and explicit clear were acknowledged. A playing native profile card has not yet been visually verified. |
@@ -30,4 +33,4 @@ Checked on the same Windows host with Visual Studio 2022, MSVC 14.44, and Window
 
 In a nine-second offline, windowless preview, the native process used 10.78 MiB working memory and 1.62 MiB private memory. The equivalent Python preview used 30.18 MiB working memory and 15.64 MiB private memory across its launcher and interpreter. CPU time for both stayed below timer resolution during the four-second sample. These are short preview measurements, not a long-running live/artwork benchmark.
 
-New motion-cover preparation and public Apple page/duplicate-JPEG fallback are not included in this native preview; see [native setup and limitations](native/README.md).
+The native preview includes normal and animated artwork, public Apple page fallback, and exact artist/album fallback. See [native setup](native/README.md) for the portable download and optional motion support.

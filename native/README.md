@@ -2,6 +2,8 @@
 
 A small C++ Windows app that shares Apple Music with Discord from the notification area. It runs without Python and keeps its settings window closed during normal use.
 
+[Download the portable Windows preview](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1), extract all files to a permanent folder, and open **AppleMusicPresenceNative.exe**.
+
 ## Build and run
 
 Use Windows 10 1809 or newer, x64, and Visual Studio 2022 / Build Tools with **Desktop development with C++** and a Windows 10/11 SDK.
@@ -17,11 +19,11 @@ Open the music-note tray icon for settings. Enter your Discord Application ID; A
 
 ## Artwork
 
-Enable normal artwork to look up exact songs and album editions through Apple’s public catalog, with Apple Music pages as fallback. Covers request 1024px. Duplicate releases share a normal cover only when the display bytes match; an uncertain release omits the album link and motion lookup.
+Enable normal artwork to look up the exact song and album edition through Apple’s public catalog. If the song is missing, the app looks for its exact artist and full album title, then uses Apple Music pages as fallback. Covers request 1024px. Duplicate releases share a normal cover only when the display bytes match; an uncertain release omits the album link and motion lookup.
 
 For automatic animations, enable **Prefer animated covers when available**, enter a public repository as `owner/repository`, and configure write access using either your existing Git for Windows credential-helper sign-in or `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN` with **Contents: read and write**. Tokens never belong in settings or Git.
 
-Place a Windows **ffmpeg.exe** supporting `libwebp_anim` beside the app, or in an absolute directory on PATH. [FFmpeg’s download page](https://ffmpeg.org/download.html) lists Windows builds. The converter runs only when a new motion cover needs preparation; it is optional for normal artwork and existing animations. Tested with FFmpeg 7.1. Keep the build’s license notices if redistributing it.
+Close the app, then double-click **Install-MotionSupport.cmd** in the downloadable ZIP to download and verify an optional FFmpeg 9.0.2 converter directly from [Gyan’s public release](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2). Restart the app afterwards. The installer retains the provider’s license and build notices. The converter runs only for new motion covers; normal artwork and existing animations work without it. You can also place a Windows **ffmpeg.exe** supporting `libwebp_anim` beside the app or in an absolute directory on PATH; [FFmpeg’s download page](https://ffmpeg.org/download.html) lists Windows builds.
 
 Normal artwork stays visible while the app prepares a looping WebP and publishes it to the repository’s **motion-artwork** branch. The same song then upgrades to the animation. Missing motion, unsupported streams, conversion failures, or upload failures preserve normal artwork. Animated results cache for seven days, no-motion results for one day, and temporary failures retry after a minute. A verified Apple album ID shares covers across songs and guest artists.
 
@@ -51,3 +53,15 @@ Tests use fake Discord pipes, public-catalog/hosting fixtures, and isolated chil
 ## Dependencies
 
 Windows SDK [C++/WinRT media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession), Win32, WinHTTP, BCrypt, and [Discord’s documented local RPC](https://docs.discord.com/developers/topics/rpc). JSON uses vendored [nlohmann/json 3.12.0](https://github.com/nlohmann/json/releases/tag/v3.12.0) under [MIT](vendor/nlohmann/LICENSE.MIT). FFmpeg is an optional separate executable; Git credential lookup runs only for motion publication.
+
+## Packaging
+
+Download the [native preview ZIP](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1), extract it into a permanent folder, and open **AppleMusicPresenceNative.exe**. No Python, compiler, or admin install is needed. For new animated covers, double-click **Install-MotionSupport.cmd** once, then configure animated artwork in the app.
+
+To build the downloadable preview after tests pass:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\native\package.ps1 -Version native-v0.1.0-preview.1
+```
+
+The ZIP and `SHA256SUMS.txt` appear in `dist/native`. Packaging checks the app’s x64 GUI header and rejects private profile paths in its binary. An explicit file list includes only the app, concise setup, optional converter installer, and third-party notices; settings, caches, tests, debug files, and FFmpeg stay outside the ZIP. The installer uses a fixed public release URL, validates archive and executable SHA256 hashes, and extracts only the converter and its notices. It does not sign into GitHub or touch app settings/startup.

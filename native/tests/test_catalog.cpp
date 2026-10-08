@@ -118,12 +118,57 @@ void test_catalog() {
     check(song_candidates(Json{{"results", Json::array({second})}}.dump(), track).empty(), "Keep full edition words in catalog extraction");
     check(song_candidates("{\"results\":[null,42,{}]}", track).empty(), "Ignore malformed catalog rows");
 
+    Json album_result{{"collectionType", "Album"}, {"artistName", "Tainy & Guest"}, {"collectionName", "DATA"},
+        {"artworkUrl100", "https://is1-ssl.mzstatic.com/image/thumb/album/100x100bb-75.jpg"}, {"collectionViewUrl", page}};
+    auto albums = album_candidates(Json{{"results", Json::array({album_result})}}.dump(), track.artist, track.album);
+    auto album_match = known_cover(albums);
+    check(album_match && album_match->url == "https://is1-ssl.mzstatic.com/image/thumb/album/1024x1024bb.jpg"
+          && album_match->track_url == page, "Exact album-only match supplies sharp art and verified collection page");
+    check(album_candidates(Json{{"results", Json::array({album_result})}}.dump(), "Other Artist", track.album).empty(),
+          "Album fallback never substitutes a different artist");
+    for (const auto& edition : {"DATA (Deluxe)", "DATA (Instrumental)", "DATA (Live)", "DATA (Remastered)"})
+        check(album_candidates(Json{{"results", Json::array({album_result})}}.dump(), track.artist, edition).empty(),
+              "Album fallback preserves complete edition words");
+    auto alternate_album = album_result; alternate_album["collectionViewUrl"] = other_page;
+    albums = album_candidates(Json{{"results", Json::array({album_result, alternate_album})}}.dump(), track.artist, track.album);
+    album_match = known_cover(albums);
+    check(albums.size() == 2 && album_match && album_match->track_url.empty(),
+          "Identical album covers across releases never choose an arbitrary album ID");
+    alternate_album["artworkUrl100"] = "https://is1-ssl.mzstatic.com/image/thumb/different-album/100x100bb.jpg";
+    albums = album_candidates(Json{{"results", Json::array({album_result, alternate_album})}}.dump(), track.artist, track.album);
+    check(albums.size() == 2 && !known_cover(albums), "Different album covers remain ambiguous until strict display comparison");
+    unsigned album_downloads = 0;
+    const auto shared_album = shared_cover(albums, nullptr, [&](std::string_view, std::size_t, HANDLE) {
+        return HttpResponse{200, jpeg(++album_downloads == 1 ? 'a' : 'b'), ""};
+    });
+    check(shared_album && shared_album->track_url.empty() && album_downloads == 2,
+          "Album fallback reuses exact duplicate-image comparison without guessing a release");
+    for (const auto* bad_field : {"collectionType", "artistName", "collectionName", "artworkUrl100", "collectionViewUrl"}) {
+        auto invalid_album = album_result; invalid_album[bad_field] = 42;
+        check(album_candidates(Json{{"results", Json::array({invalid_album})}}.dump(), track.artist, track.album).empty(),
+              "Reject malformed album metadata and URL field types");
+    }
+    for (const auto& invalid_url : {"http://is1-ssl.mzstatic.com/cover.jpg", "https://is1-ssl.mzstatic.com.evil.test/cover.jpg",
+                                   "https://user:secret@is1-ssl.mzstatic.com/cover.jpg"}) {
+        auto invalid_album = album_result; invalid_album["artworkUrl100"] = invalid_url;
+        check(album_candidates(Json{{"results", Json::array({invalid_album})}}.dump(), track.artist, track.album).empty(),
+              "Reject unsafe album artwork destinations");
+    }
+    auto invalid_album = album_result; invalid_album["collectionViewUrl"] = "https://evil.test/album/123";
+    check(album_candidates(Json{{"results", Json::array({invalid_album})}}.dump(), track.artist, track.album).empty(),
+          "Require public Apple store page for album fallback");
+    check(album_candidates("{\"results\":[null,42,{}]}", track.artist, track.album).empty(), "Ignore malformed album result rows");
+    for (const auto& metadata : std::vector<std::pair<std::string, std::string>>{
+            {"", "DATA"}, {"Artist", ""}, {"!", "DATA"}, {std::string(513, 'a'), "DATA"}})
+        check(album_candidates("not JSON: must never be parsed for incomplete metadata", metadata.first, metadata.second).empty(),
+              "Skip incomplete album metadata before parsing or network work");
+
     for (bool big : {true, false}) {
         const auto original = exif('a', 0, big);
         const auto normalized = normalized_exif(original);
         check(normalized && normalized == normalized_exif(exif('b', 0, big)), "Normalize only known UserComment for both TIFF byte orders");
         check(normalized->substr(0, normalized->size() - 34) == original.substr(0, original.size() - 34)
-              && normalized->substr(normalized->size() - 34) == std::string(34, '\0'), "Preserve all other_page EXIF bytes");
+              && normalized->substr(normalized->size() - 34) == std::string(34, '\0'), "Preserve all other EXIF bytes");
     }
     check(comparable_jpeg(jpeg('a')) == comparable_jpeg(jpeg('b')), "Identical visible JPEG differing only in UserComment shares cover");
     check(comparable_jpeg(jpeg('a', 1)) != comparable_jpeg(jpeg('a', 6)), "Keep orientation differences");

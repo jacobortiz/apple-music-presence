@@ -2,7 +2,7 @@
 
 A Windows desktop app that shares the current Apple Music track on Discord.
 
-A lightweight [C++ tray app](native/README.md) is also available. It runs without Python and supports sharing, exact artwork matching, and automatic animated covers. FFmpeg runs only when a new animation needs preparation.
+A lightweight [C++ tray app](native/README.md) is available as a [Windows download](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1). Extract the ZIP to a permanent folder and run `AppleMusicPresenceNative.exe`. It needs no Python and supports sharing, exact artwork matching, and automatic animated covers. Optional motion-support setup is included; FFmpeg runs only when a new animation needs preparation.
 
 - **Member list:** the current artist.
 - **Profile:** “Listening to Apple Music,” song, artist, album cover, and playback progress. Hover the cover for the album name.
@@ -63,7 +63,7 @@ URLs must be public HTTPS with no query or fragment; images must end in `.webp`,
 ## Troubleshooting and privacy
 
 - Detection polls every second; changed activities are sent at most every five seconds. Discord may take longer to display them.
-- Artwork uses exact Apple catalog matches, with public Music pages as fallback. Duplicate releases can share verified identical normal covers; an uncertain release omits the album link and animation. Missing tags, different covers, network failures, and Apple page changes can prevent artwork. Failed lookups retry during playback.
+- Artwork uses exact Apple catalog matches, including an artist-and-album fallback when a song title cannot be matched. Public Music pages provide another fallback. Album editions stay separate; uncertain releases omit the album link and animation. Failed lookups retry during playback.
 - No timeline means no progress bar. Discord controls animation playback and button visibility; check buttons from another account.
 - Use `--demo` for an offline preview, `--diagnose` to inspect local media metadata, or `--verbose` for troubleshooting. `--source-id` selects an exact media session if needed. Run one instance per Application ID.
 - Artwork opt-in sends song metadata to Apple's public services. Motion opt-in uploads public cover images to GitHub. No local music, browser cookies, Apple passwords, Discord tokens, or telemetry are collected.
@@ -80,7 +80,7 @@ Use `--client-id YOUR_APPLICATION_ID` to override the saved ID, `--country GB` t
 
 ## Development
 
-The backend-neutral `Track` / `MediaSnapshot` contract separates Windows detection from Discord. A future C++ adapter can implement `MediaBackend.read()` and `close()` and replace the backend in `app.make_service()`. Network and IPC work run off the UI thread.
+The Python app separates Windows detection from Discord through the `Track` / `MediaSnapshot` contract. The [native app](native/README.md) implements detection, Discord IPC, artwork, and hosting in C++. Network and IPC work run off the UI thread.
 
 Detection uses Microsoft's [Windows media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessionmanager) via PyWinRT. Discord uses [local RPC](https://docs.discord.com/developers/topics/rpc) through pypresence; [status display type](https://docs.discord.com/developers/discord-social-sdk/development-guides/setting-rich-presence#configuring-status-text) keeps the artist in the member list. Artwork uses [Apple's Search API](https://performance-partners.apple.com/search-api) and public album pages; imageio-ffmpeg converts motion covers and [GitHub's Contents API](https://docs.github.com/en/rest/repos/contents) hosts them. Dependencies are pinned in `pyproject.toml`.
 

@@ -14,6 +14,7 @@ using CatalogHttpGetter = std::function<HttpResponse(std::string_view, std::size
 
 namespace catalog_detail {
 std::vector<Artwork> song_candidates(std::string_view json, const Track& track);
+std::vector<Artwork> album_candidates(std::string_view json, std::string_view artist, std::string_view album);
 std::optional<Artwork> known_cover(const std::vector<Artwork>& candidates);
 std::optional<std::string> normalized_exif(std::string_view bytes);
 std::optional<std::string> comparable_jpeg(std::string_view bytes);

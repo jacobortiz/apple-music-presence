@@ -275,8 +275,8 @@ struct ArtworkResolver::Impl {
     CatalogResolver catalog;
     std::function<void()> changed;
     HANDLE stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
-    struct Entry { std::string key; std::optional<Artwork> artwork; Clock::time_point expires; };
-    std::list<Entry> cache;
+    struct Entry { std::string key; std::optional<Artwork> artwork; Clock::time_point expires; bool retryable{}; };
+    std::list<Entry> cache, album_cache;
     Clock::time_point next_request{};
     struct Alias { std::string key, page; Clock::time_point expires; };
     struct Motion { std::string key; std::optional<Artwork> cover; double expires; std::string message; };
@@ -304,6 +304,47 @@ struct ArtworkResolver::Impl {
     bool cancelled() const { return WaitForSingleObject(stop, 0) == WAIT_OBJECT_0; }
     void cancel() noexcept { SetEvent(stop); ready.notify_all(); }
     void signal() { if (changed && !cancelled()) { try { changed(); } catch (...) {} } }
+    std::string search(std::string_view term, std::string_view entity) {
+        if (cancelled()) throw std::runtime_error("Artwork lookup cancelled");
+        auto wait = next_request - Clock::now();
+        if (wait > Clock::duration::zero() && WaitForSingleObject(stop,
+            static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(wait).count() + 1)) == WAIT_OBJECT_0)
+            throw std::runtime_error("Artwork lookup cancelled");
+        next_request = Clock::now() + dependencies.request_interval;
+        const auto url = "https://itunes.apple.com/search?term=" + encode(term)
+            + "&country=" + ascii_lower(settings.country) + "&media=music&entity=" + std::string(entity) + "&limit=25";
+        auto response = dependencies.http(url, max_json, stop);
+        if (cancelled()) throw std::runtime_error("Artwork lookup cancelled");
+        if (response.status != 200) throw std::runtime_error("Artwork catalog unavailable");
+        return std::move(response.body);
+    }
+    std::optional<Artwork> album_cover(const Track& track, bool& retryable) {
+        // This cache comes only from an independent exact album search. A song
+        // lookup must never seed an album-wide identity for unrelated tracks.
+        const auto key = artwork_detail::normalize(track.artist) + '\0' + artwork_detail::normalize(track.album);
+        auto cached = std::find_if(album_cache.begin(), album_cache.end(), [&](const auto& entry) { return entry.key == key; });
+        if (cached != album_cache.end()) {
+            if (cached->expires > Clock::now()) {
+                auto cover = cached->artwork; retryable |= cached->retryable;
+                album_cache.splice(album_cache.begin(), album_cache, cached); return cover;
+            }
+            album_cache.erase(cached);
+        }
+        std::optional<Artwork> cover;
+        auto ttl = std::chrono::seconds(600);
+        bool failure = false;
+        try {
+            auto candidates = catalog_detail::album_candidates(search(track.artist + " " + track.album, "album"), track.artist, track.album);
+            cover = catalog_detail::known_cover(candidates);
+            if (!cover) cover = shared_cover(candidates, stop, dependencies.http);
+            if (cover) ttl = std::chrono::seconds(86400);
+        } catch (...) { ttl = std::chrono::seconds(10); failure = true; }
+        if (cancelled()) return {};
+        retryable |= failure;
+        album_cache.push_front({key, cover, Clock::now() + ttl, failure});
+        if (album_cache.size() > 128) album_cache.pop_back();
+        return cover;
+    }
     void load_motion() {
         auto data = read_file(data_dir / "motion_cache.json");
         if (!data) return;
@@ -470,18 +511,11 @@ std::optional<Artwork> ArtworkResolver::resolve(const Track& track) {
     }
     if (!result) {
         try {
-            auto wait = impl_->next_request - Clock::now();
-            if (wait > Clock::duration::zero() && WaitForSingleObject(impl_->stop, static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(wait).count())) == WAIT_OBJECT_0)
-                return {};
-            impl_->next_request = Clock::now() + impl_->dependencies.request_interval;
-            const auto url = "https://itunes.apple.com/search?term=" + encode(track.title + " " + track.artist + " " + track.album)
-                + "&country=" + ascii_lower(impl_->settings.country) + "&media=music&entity=song&limit=25";
-            auto response = impl_->dependencies.http(url, max_json, impl_->stop);
-            if (response.status != 200) throw std::runtime_error("Artwork catalog unavailable");
-            auto candidates = catalog_detail::song_candidates(response.body, track);
+            auto candidates = catalog_detail::song_candidates(impl_->search(track.title + " " + track.artist + " " + track.album, "song"), track);
             result = catalog_detail::known_cover(candidates);
             if (!result) result = shared_cover(candidates, impl_->stop, impl_->dependencies.http);
         } catch (...) { transient = true; }
+        if (!result && !impl_->cancelled()) result = impl_->album_cover(track, transient);
         if (!result && !impl_->cancelled()) {
             try { result = impl_->catalog.page_cover(track, impl_->stop); transient |= impl_->catalog.retryable(); } catch (...) { transient = true; }
         }

@@ -13,7 +13,7 @@
       <Optimization>MaxSpeed</Optimization>
       <WarningLevel>Level4</WarningLevel>
       <ExceptionHandling>Sync</ExceptionHandling>
-      <AdditionalOptions>/utf-8 /permissive- /UNDEBUG %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /permissive- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>windowsapp.lib;runtimeobject.lib;winhttp.lib;normaliz.lib;shell32.lib;user32.lib;gdi32.lib;ole32.lib;advapi32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>

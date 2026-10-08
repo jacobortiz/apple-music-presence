@@ -21,6 +21,7 @@ void test_motion();
 void test_artwork_host();
 void test_transport();
 void test_artwork_worker();
+void test_album_fallback();
 static void test_core() {
     using namespace amp;
     Snapshot snapshot{Track{"Song", "Artist", "Album"}, PlaybackState::playing, 10.0, 200.0, 1000.0};
@@ -94,6 +95,7 @@ int main(int argc, char* argv[]) {
         test_artwork_host(); std::cout << "Public hosting and credential safety checks passed\n";
         test_transport(); std::cout << "HTTP and child cancellation checks passed\n";
         test_artwork_worker(); std::cout << "Asynchronous artwork upgrade checks passed\n";
+        test_album_fallback(); std::cout << "Exact album fallback checks passed\n";
         test_service(); std::cout << "Background service checks passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << std::endl; return 1; }
