@@ -241,7 +241,7 @@ void test_artwork_host() {
     require(amp::host_detail::valid_repository(repository), "Valid repository was rejected.");
     for (const auto invalid : {"../repo", "owner/../repo", "https://github.com/owner/repo", "owner/repo?token=value", "owner/repo\n"})
         require(!amp::host_detail::valid_repository(invalid), "Unsafe repository was accepted.");
-    require(amp::host_detail::motion_filename("123", stream) == filename, "Motion filename is incompatible with Python cache hashes.");
+    require(amp::host_detail::motion_filename("123", stream) == filename, "Keep motion filenames compatible with existing cached hashes.");
     test_existing_cover();
     test_create_branch_and_upload();
     test_branch_and_upload_races();

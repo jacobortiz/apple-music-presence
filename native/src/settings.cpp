@@ -54,7 +54,7 @@ std::optional<nlohmann::json> read_json(const std::filesystem::path& path, size_
 }
 Settings load_settings(const std::filesystem::path& directory) {
     Settings result;
-    // Import public/non-secret Python preferences once; never overwrite them.
+    // Import non-secret legacy preferences once; never overwrite them.
     auto path = directory / L"native_settings.json";
     auto data = read_json(path, 16 * 1024);
     if (!std::filesystem::exists(path)) data = read_json(directory / L"settings.json", 16 * 1024);

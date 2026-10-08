@@ -137,5 +137,5 @@ void test_artwork() {
     ArtworkResolver custom_resolver(mapped, fixture.directory);
     result = custom_resolver.resolve({"Example Track", "Example Artist", "Example Album"});
     check(result && result->animated && result->url == "https://example.com/custom.webp",
-          "Reuse Python app custom artwork filename without catalog lookup");
+          "Reuse existing custom artwork filename without catalog lookup");
 }

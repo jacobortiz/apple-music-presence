@@ -1,67 +1,51 @@
-# Native tray app
+# C++ development
 
-A small C++ Windows app that shares Apple Music with Discord from the notification area. It runs without Python and keeps its settings window closed during normal use.
+See the [main README](../README.md) for the portable download, setup, artwork, and privacy.
 
-[Download the portable Windows preview](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1), extract all files to a permanent folder, and open **AppleMusicPresenceNative.exe**.
+## Build and test
 
-## Build and run
-
-Use Windows 10 1809 or newer, x64, and Visual Studio 2022 / Build Tools with **Desktop development with C++** and a Windows 10/11 SDK.
+Use Windows 10 1809 or newer, x64, and Visual Studio 2022 / Build Tools with **Desktop development with C++** and a Windows 10/11 SDK. Run these commands from the repository root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\native\build.ps1 -Test
 .\build\native\Release\AppleMusicPresenceNative.exe
 ```
 
-Open the music-note tray icon for settings. Enter your Discord Application ID; Apple Music and Discord desktop must be running. Right-click the icon to pause/resume sharing or exit. Closing settings keeps sharing. The icon may be in Windows’ hidden-icons menu.
+After building, `launch.cmd` also opens the app and forwards diagnostic arguments.
 
-**Start with Windows** is optional and takes effect when you save. Disable it before moving the executable. Run one presence app per Discord Application ID.
+The x64 C++20 Release build uses a static C++ runtime. Test assertions stay enabled; application release assertions are disabled to avoid embedding private build paths.
 
-## Artwork
+Tests use fake Discord pipes, public-catalog/hosting fixtures, and isolated child processes. They cover metadata, album identity, duplicate JPEGs, HLS limits, image metadata rejection, credentials, same-song upgrades, stale jobs, reconnects, and cancellation. See [validation](../VALIDATION.md) for live checks.
 
-Enable normal artwork to look up the exact song and album edition through Apple’s public catalog. If the song is missing, the app looks for its exact artist and full album title, then uses Apple Music pages as fallback. Covers request 1024px. Duplicate releases share a normal cover only when the display bytes match; an uncertain release omits the album link and motion lookup.
+## Architecture
 
-For automatic animations, enable **Prefer animated covers when available**, enter a public repository as `owner/repository`, and configure write access using either your existing Git for Windows credential-helper sign-in or `APPLE_MUSIC_PRESENCE_GITHUB_TOKEN` with **Contents: read and write**. Tokens never belong in settings or Git.
+- `MediaBackend` uses [Windows media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession) and wakes the service on playback events.
+- `Service` coordinates playback and sharing, with a 30-second health check, reconnect backoff, and a five-second minimum between changed activities.
+- `DiscordRpc` uses [Discord's documented local RPC](https://docs.discord.com/developers/topics/rpc). Pause, stop, and exit clear the activity.
+- `ArtworkResolver` checks exact song metadata, exact artist/full album edition, then public Apple Music pages. Identical duplicate covers can share display artwork; uncertain releases omit album links and animation.
+- Background artwork/motion workers keep lookup, encoding, and upload work off the UI thread. Downloads and conversion are bounded; exit cancels work.
 
-Close the app, then double-click **Install-MotionSupport.cmd** in the downloadable ZIP to download and verify an optional FFmpeg 9.0.2 converter directly from [Gyan’s public release](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2). Restart the app afterwards. The installer retains the provider’s license and build notices. The converter runs only for new motion covers; normal artwork and existing animations work without it. You can also place a Windows **ffmpeg.exe** supporting `libwebp_anim` beside the app or in an absolute directory on PATH; [FFmpeg’s download page](https://ffmpeg.org/download.html) lists Windows builds.
+Dependencies are Windows SDK C++/WinRT, Win32, WinHTTP, BCrypt, and vendored [nlohmann/json 3.12.0](https://github.com/nlohmann/json/releases/tag/v3.12.0) under [MIT](vendor/nlohmann/LICENSE.MIT). FFmpeg is optional and runs only for new animations; Git credential lookup runs only for publication. See [third-party notices](../THIRD_PARTY_NOTICES.txt).
 
-Normal artwork stays visible while the app prepares a looping WebP and publishes it to the repository’s **motion-artwork** branch. The same song then upgrades to the animation. Missing motion, unsupported streams, conversion failures, or upload failures preserve normal artwork. Animated results cache for seven days, no-motion results for one day, and temporary failures retry after a minute. A verified Apple album ID shares covers across songs and guest artists.
+Preferences use `%LOCALAPPDATA%\AppleMusicPresence\native_settings.json`. First launch can import non-secret legacy `settings.json`; custom artwork maps and verified motion-cache entries remain compatible. Legacy files are not overwritten.
 
-Motion covers use Lanczos scaling at 768px, quality 85, with smaller frame rate/size only when needed for the 8 MB limit. Downloads and conversion are bounded; quitting cancels background work. Discord controls image caching and animation playback.
-
-Existing Python `album_artwork.json` maps and verified `motion_cache.json` entries are compatible. See the main [artwork instructions](../README.md#animated-covers).
-
-## Preferences and privacy
-
-On first launch, the app imports non-secret Python preferences. It saves its own `native_settings.json` in `%LOCALAPPDATA%\AppleMusicPresence`, leaving Python settings intact. Maps and the bounded album cache stay in that folder.
-
-Artwork opt-in sends track tags to Apple. Motion opt-in uploads only metadata-free public cover images, with album IDs and a GitHub no-reply commit identity. Public artwork commits reveal prepared albums and upload times. Credentials remain in memory and reach GitHub’s API only; they never reach public image downloads or the converter. The app collects no local music files, browser cookies, Apple passwords, Discord tokens, telemetry, or per-song history.
-
-Media detection uses Windows events. Separate background workers handle artwork and motion, so lookups, encoding, and uploads do not delay playback detection or the settings window. Pause/stop/exit clear Discord activity; reconnects use backoff and an idle health check.
-
-## Verification
+## Diagnostic options
 
 ```powershell
 .\build\native\Release\AppleMusicPresenceNative.exe --diagnose
 .\build\native\Release\AppleMusicPresenceNative.exe --headless --demo --seconds 5
 ```
 
-`--diagnose` prints only local media availability flags. `--demo` uses an offline sample and never writes preferences, contacts Apple/Discord, or changes startup. `--headless` requires a duration.
-
-Tests use fake Discord pipes, public-catalog/hosting fixtures, and isolated child processes. They cover album identity, duplicate JPEGs, HLS limits, image metadata rejection, credentials, same-song upgrades, stale jobs, reconnects, and cancellation. Live profile rendering still depends on Discord.
-
-## Dependencies
-
-Windows SDK [C++/WinRT media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession), Win32, WinHTTP, BCrypt, and [Discord’s documented local RPC](https://docs.discord.com/developers/topics/rpc). JSON uses vendored [nlohmann/json 3.12.0](https://github.com/nlohmann/json/releases/tag/v3.12.0) under [MIT](vendor/nlohmann/LICENSE.MIT). FFmpeg is an optional separate executable; Git credential lookup runs only for motion publication.
+`--diagnose` prints local media availability flags. `--demo` uses an offline sample and never writes preferences, contacts Apple/Discord, or changes startup. `--headless` requires `--seconds` for a bounded run; omit `--demo` to use saved live settings. `--seconds` accepts positive durations up to 86400 seconds.
 
 ## Packaging
 
-Download the [native preview ZIP](https://github.com/jacobortiz/apple-music-presence/releases/tag/native-v0.1.0-preview.1), extract it into a permanent folder, and open **AppleMusicPresenceNative.exe**. No Python, compiler, or admin install is needed. For new animated covers, double-click **Install-MotionSupport.cmd** once, then configure animated artwork in the app.
-
-To build the downloadable preview after tests pass:
+After a successful build and tests:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\native\package.ps1 -Version native-v0.1.0-preview.1
 ```
 
-The ZIP and `SHA256SUMS.txt` appear in `dist/native`. Packaging checks the app’s x64 GUI header and rejects private profile paths in its binary. An explicit file list includes only the app, concise setup, optional converter installer, and third-party notices; settings, caches, tests, debug files, and FFmpeg stay outside the ZIP. The installer uses a fixed public release URL, validates archive and executable SHA256 hashes, and extracts only the converter and its notices. It does not sign into GitHub or touch app settings/startup.
+The ZIP and `SHA256SUMS.txt` appear in `dist/native`. Packaging validates the x64 GUI header and rejects private profile paths in the executable. Its explicit file list includes only the app, concise setup, optional converter installer, and third-party notices. Settings, caches, tests, debug files, and FFmpeg stay outside the ZIP.
+
+`Install-MotionSupport.cmd` launches the optional PowerShell installer. It downloads FFmpeg 9.0.2 directly from [Gyan's public release](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2), verifies pinned archive/executable SHA256 hashes, and extracts only the converter and provider notices. It does not sign into GitHub or change settings/startup. Alternatively, place an `ffmpeg.exe` supporting `libwebp_anim` beside the app or in an absolute directory on PATH. [FFmpeg's download page](https://ffmpeg.org/download.html) lists Windows providers.

@@ -105,7 +105,7 @@ $files = [ordered]@{
     'AppleMusicPresenceNative.exe' = $resolvedApp
     'Install-MotionSupport.ps1' = Join-Path $PSScriptRoot 'Install-MotionSupport.ps1'
     'Install-MotionSupport.cmd' = Join-Path $PSScriptRoot 'Install-MotionSupport.cmd'
-    'THIRD_PARTY_NOTICES.txt' = Join-Path $PSScriptRoot 'release-notices.txt'
+    'THIRD_PARTY_NOTICES.txt' = Join-Path $PSScriptRoot '..\THIRD_PARTY_NOTICES.txt'
     'licenses/nlohmann-json-MIT.txt' = Join-Path $PSScriptRoot 'vendor\nlohmann\LICENSE.MIT'
 }
 foreach ($file in $files.Values) {
