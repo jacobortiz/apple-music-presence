@@ -1,5 +1,6 @@
 #include "amp/artwork.hpp"
 #include "amp/settings.hpp"
+#include <amp/catalog.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
@@ -33,6 +34,9 @@ void test_artwork() {
     using namespace amp;
     using namespace amp::artwork_detail;
     using Json = nlohmann::json;
+    const auto catalog_match = [](std::string_view payload, const Track& track) {
+        return catalog_detail::known_cover(catalog_detail::song_candidates(payload, track));
+    };
     const Track track{"Nothing Compares", "The Weeknd", "After Hours (Deluxe)"};
     const std::string image = "https://is1-ssl.mzstatic.com/image/thumb/Music/example.jpg/100x100bb-60.jpg";
     const std::string sharp = "https://is1-ssl.mzstatic.com/image/thumb/Music/example.jpg/1024x1024bb.jpg";

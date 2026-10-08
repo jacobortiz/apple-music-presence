@@ -25,7 +25,7 @@ struct StartupValue { DWORD type{}; std::vector<BYTE> data; };
 std::optional<StartupValue> startup_value() {
     DWORD size{}, type{};
     auto result = RegGetValueW(HKEY_CURRENT_USER, startup_key, startup_name, RRF_RT_ANY | RRF_NOEXPAND, &type, nullptr, &size);
-    if (result == ERROR_FILE_NOT_FOUND) return {};
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND) return {};
     if (result != ERROR_SUCCESS || size > 65536) throw std::runtime_error("Could not read automatic startup");
     StartupValue value{type, std::vector<BYTE>(size)};
     if (RegGetValueW(HKEY_CURRENT_USER, startup_key, startup_name, RRF_RT_ANY | RRF_NOEXPAND, &value.type, value.data.data(), &size) != ERROR_SUCCESS)
@@ -149,8 +149,7 @@ private:
         startup_ = control(L"BUTTON", L"Start with Windows", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 244, 445, 24);
         SendMessageW(artwork_, BM_SETCHECK, settings_.artwork ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(motion_, BM_SETCHECK, settings_.motion_artwork ? BST_CHECKED : BST_UNCHECKED, 0);
-        startup_initial_ = !demo_ && startup_enabled();
-        SendMessageW(startup_, BM_SETCHECK, startup_initial_ ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(startup_, BM_SETCHECK, !demo_ && startup_enabled() ? BST_CHECKED : BST_UNCHECKED, 0);
         control(L"STATIC", L"Artwork sends track tags to Apple. Animated covers upload\npublic images to this repository using your GitHub sign-in.", 0, 20, 278, 450, 46);
         control(L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 20, 334, 90, 28, id_save);
         control(L"STATIC", L"Closing this window keeps sharing. Exit from the tray icon.", 0, 20, 373, 450, 24);
@@ -172,7 +171,7 @@ private:
         NOTIFYICONDATAW data{}; data.cbSize = sizeof(data); data.hWnd = window_; data.uID = 1;
         Shell_NotifyIconW(NIM_DELETE, &data); tray_added_ = false;
     }
-    void show() { ShowWindow(window_, SW_SHOW); SetForegroundWindow(window_); SetTimer(window_, 1, 1000, nullptr); refresh(); }
+    void show() { ShowWindow(window_, SW_SHOW); SetForegroundWindow(window_); refresh(); }
     void refresh() {
         amp::Status status; { std::lock_guard lock(mutex_); status = status_; }
         std::wstring message = amp::wide(status.message);
@@ -195,7 +194,7 @@ private:
         PostMessageW(window_, WM_NULL, 0, 0);
     }
     void save() {
-        if (demo_) { ShowWindow(window_, SW_HIDE); KillTimer(window_, 1); return; }
+        if (demo_) { ShowWindow(window_, SW_HIDE); return; }
         auto changed = settings_;
         changed.artwork_repository = amp::utf8(control_text(repository_));
         changed.client_id = amp::utf8(control_text(client_)); changed.country = amp::utf8(control_text(country_));
@@ -206,13 +205,12 @@ private:
         changed.start_with_windows = SendMessageW(startup_, BM_GETCHECK, 0, 0) == BST_CHECKED;
         try {
             amp::validate_settings(changed);
-            bool change_startup = changed.start_with_windows != startup_initial_;
-            auto previous_startup = change_startup ? startup_value() : std::optional<StartupValue>{};
+            const auto previous_startup = startup_value();
+            const bool change_startup = changed.start_with_windows ? !startup_enabled() : previous_startup.has_value();
             if (change_startup) set_startup(changed.start_with_windows);
             try { amp::save_settings(changed, directory_); }
             catch (...) { if (change_startup) restore_startup(previous_startup); throw; }
-            startup_initial_ = changed.start_with_windows;
-            settings_ = changed; service_->configure(settings_); ShowWindow(window_, SW_HIDE); KillTimer(window_, 1);
+            settings_ = changed; service_->configure(settings_); ShowWindow(window_, SW_HIDE);
         } catch (const std::exception& error) { MessageBoxW(window_, amp::wide(error.what()).c_str(), L"Check setup", MB_OK | MB_ICONERROR); }
     }
     LRESULT handle(UINT message, WPARAM wparam, LPARAM lparam) {
@@ -235,21 +233,21 @@ private:
             case id_exit: remove_tray(); ShowWindow(window_, SW_HIDE); service_.reset(); DestroyWindow(window_); break;
             }
             return 0;
-        case WM_CLOSE: if (tray_added_) { ShowWindow(window_, SW_HIDE); KillTimer(window_, 1); } else PostMessageW(window_, WM_COMMAND, id_exit, 0); return 0;
+        case WM_CLOSE: if (tray_added_) { ShowWindow(window_, SW_HIDE); } else PostMessageW(window_, WM_COMMAND, id_exit, 0); return 0;
         case WM_QUERYENDSESSION: return TRUE;
         case WM_CTLCOLORSTATIC:
             SetBkColor(reinterpret_cast<HDC>(wparam), GetSysColor(COLOR_WINDOW));
             SetTextColor(reinterpret_cast<HDC>(wparam), GetSysColor(IsWindowEnabled(reinterpret_cast<HWND>(lparam)) ? COLOR_WINDOWTEXT : COLOR_GRAYTEXT));
             return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
         case WM_ENDSESSION: if (wparam) { remove_tray(); service_.reset(); DestroyWindow(window_); } return 0;
-        case WM_TIMER: if (wparam == 2) PostMessageW(window_, WM_COMMAND, id_exit, 0); else if (IsWindowVisible(window_)) refresh(); return 0;
+        case WM_TIMER: if (wparam == 2) PostMessageW(window_, WM_COMMAND, id_exit, 0); return 0;
         case WM_DESTROY: PostQuitMessage(0); return 0;
         }
         return DefWindowProcW(window_, message, wparam, lparam);
     }
     amp::Settings settings_;
     std::filesystem::path directory_;
-    bool demo_{}, paused_{}, tray_added_{}, startup_initial_{};
+    bool demo_{}, paused_{}, tray_added_{};
     double seconds_{};
     HWND window_{}, client_{}, country_{}, artwork_{}, motion_{}, repository_{}, startup_{}, status_control_{}, track_control_{}, art_status_control_{};
     UINT taskbar_created_{};

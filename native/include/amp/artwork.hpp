@@ -43,7 +43,6 @@ namespace artwork_detail {
 std::string normalize(std::string_view value);
 std::optional<std::string> thumbnail(std::string_view value);
 std::optional<std::string> album_key(std::string_view page);
-std::optional<Artwork> catalog_match(std::string_view payload, const Track& track);
 std::optional<Artwork> mapped_cover(std::string_view payload, const Track& track);
 std::optional<Artwork> cached_motion(std::string_view payload, std::string_view repository,
                                     std::string_view verified_page, double now);

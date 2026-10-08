@@ -24,7 +24,7 @@ using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t max_json = 512 * 1024;
 constexpr std::size_t max_file = 128 * 1024;
-constexpr auto encoding_profile = "webp-768-q85-lanczos-v2";
+constexpr auto encoding_profile = motion_encoding_profile;
 
 Json parse(std::string_view text, std::size_t limit) {
     if (text.size() > limit) throw std::runtime_error("Artwork data is too large");
@@ -191,31 +191,6 @@ std::optional<std::string> album_key(std::string_view page) {
     std::smatch match;
     if (!std::regex_match(url->path, match, path)) return {};
     return "album:" + ascii_lower(match[1]) + ":" + match[2].str();
-}
-
-std::optional<Artwork> catalog_match(std::string_view payload, const Track& track) {
-    if (!valid_metadata(track)) return {};
-    const auto data = parse(payload, max_json);
-    if (!data.is_object()) throw std::runtime_error("Invalid artwork response");
-    const auto rows = data.find("results");
-    if (rows == data.end() || !rows->is_array()) throw std::runtime_error("Invalid artwork response");
-    std::vector<Artwork> matches;
-    for (const auto& row : *rows) {
-        if (!row.is_object() || string_field(row, "kind") != "song"
-            || normalize(string_field(row, "trackName")) != normalize(track.title)
-            || normalize(string_field(row, "artistName")) != normalize(track.artist)
-            || normalize(string_field(row, "collectionName")) != normalize(track.album)) continue;
-        const auto image = thumbnail(string_field(row, "artworkUrl100"));
-        const auto page = string_field(row, "trackViewUrl");
-        if (!image || !store_page(page)) continue;
-        if (std::none_of(matches.begin(), matches.end(), [&](const Artwork& a) { return a.url == *image && a.track_url == page; }))
-            matches.push_back(Artwork{*image, page, false});
-    }
-    if (matches.size() == 1) return matches.front();
-    if (matches.size() > 1 && matches.size() <= 4
-        && std::all_of(matches.begin(), matches.end(), [&](const Artwork& a) { return a.url == matches.front().url; }))
-        return Artwork{matches.front().url, "", false};
-    return {};
 }
 
 std::optional<Artwork> mapped_cover(std::string_view payload, const Track& track) {
@@ -427,11 +402,13 @@ struct ArtworkResolver::Impl {
     }
     std::optional<Artwork> prepare(const Job& job) {
         if (dependencies.motion) return dependencies.motion(job.track, job.page, stop);
-        auto prepared = prepare_motion(job.page, job.track.album, {}, data_dir, stop);
-        if (!prepared) return {};
+        const auto stream = discover_motion(job.page, job.track.album, stop);
+        if (!stream) return {};
         GithubArtworkHost host(settings.artwork_repository);
         const auto id = job.key.substr(job.key.rfind(':') + 1);
-        return Artwork{host.publish(id, prepared->stream, prepared->webp, stop), job.page, true};
+        if (const auto hosted = host.find_hosted(id, *stream, stop)) return Artwork{*hosted, job.page, true};
+        const auto webp = convert_motion(*stream, {}, data_dir, stop);
+        return Artwork{host.publish(id, *stream, webp, stop), job.page, true};
     }
     void run() {
         for (;;) {

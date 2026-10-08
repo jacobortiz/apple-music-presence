@@ -219,6 +219,29 @@ GithubArtworkHost::GithubArtworkHost(std::string repository, HostHttp http, Cred
     if (!credentials_) credentials_ = host_detail::github_token;
 }
 
+std::optional<std::string> GithubArtworkHost::find_hosted(std::string_view album_id,
+                                                        std::string_view stream, HANDLE stop) {
+    const auto filename = host_detail::motion_filename(album_id, stream);
+    checkpoint(stop);
+    try {
+        const auto ref = http_("https://api.github.com/repos/" + repository_ +
+            "/git/ref/heads/" + std::string(branch), max_api, "GET", "", "", stop);
+        checkpoint(stop);
+        if (ref.status != 200) return {};
+        const auto sha = ref_sha(parse(ref.body, max_api));
+        const auto url = "https://raw.githubusercontent.com/" + repository_ + "/" + sha +
+            "/artwork/motion/" + filename;
+        const auto image = http_(url, max_image, "GET", "", "", stop);
+        checkpoint(stop);
+        if (image.status == 200 && image.body.size() <= max_image && motion_detail::animated_webp(image.body))
+            return url;
+    } catch (...) {
+        // Unavailable public reads fall back to normal preparation. Cancellation must not.
+        checkpoint(stop);
+    }
+    return {};
+}
+
 std::string GithubArtworkHost::publish(std::string_view album_id, std::string_view stream,
                                       std::string_view content, HANDLE stop) {
     if (!valid_album(album_id) || !valid_stream(stream) || content.size() > max_image ||
