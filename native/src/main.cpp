@@ -97,7 +97,7 @@ public:
         RegisterClassW(&type);
         window_ = CreateWindowExW(0, window_class, demo_ ? L"Apple Music Presence — Offline preview" : L"Apple Music Presence",
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT, CW_USEDEFAULT, 500, 445, nullptr, nullptr, instance, this);
+            CW_USEDEFAULT, CW_USEDEFAULT, 500, 552, nullptr, nullptr, instance, this);
         if (!window_) throw std::runtime_error("Windows could not create the settings window");
         icon_ = music_icon(); SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_));
         SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_));
@@ -142,18 +142,22 @@ private:
         country_ = control(L"EDIT", amp::wide(settings_.country).c_str(), WS_TABSTOP | ES_UPPERCASE, 190, 80, 55, 26);
         SendMessageW(country_, EM_SETLIMITTEXT, 2, 0);
         artwork_ = control(L"BUTTON", L"Use public album artwork", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 120, 445, 24, id_artwork);
-        motion_ = control(L"BUTTON", L"Use existing hosted animated covers", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 150, 445, 24, id_motion);
-        startup_ = control(L"BUTTON", L"Start with Windows", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 180, 445, 24);
+        motion_ = control(L"BUTTON", L"Prefer animated covers when available", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 150, 445, 24, id_motion);
+        control(L"STATIC", L"Public artwork repository (owner/repository)", 0, 20, 180, 445, 24);
+        repository_ = control(L"EDIT", amp::wide(settings_.artwork_repository).c_str(), WS_TABSTOP | ES_AUTOHSCROLL, 20, 208, 445, 26);
+        SendMessageW(repository_, EM_SETLIMITTEXT, 201, 0);
+        startup_ = control(L"BUTTON", L"Start with Windows", WS_TABSTOP | BS_AUTOCHECKBOX, 20, 244, 445, 24);
         SendMessageW(artwork_, BM_SETCHECK, settings_.artwork ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(motion_, BM_SETCHECK, settings_.motion_artwork ? BST_CHECKED : BST_UNCHECKED, 0);
         startup_initial_ = !demo_ && startup_enabled();
         SendMessageW(startup_, BM_SETCHECK, startup_initial_ ? BST_CHECKED : BST_UNCHECKED, 0);
-        control(L"STATIC", L"Artwork sends track tags to Apple. New animations are\nnot downloaded by this version.", 0, 20, 214, 450, 46);
-        control(L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 20, 270, 90, 28, id_save);
-        control(L"STATIC", L"Closing this window keeps sharing. Exit from the tray icon.", 0, 20, 309, 450, 24);
-        status_control_ = control(L"STATIC", L"Starting…", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 20, 341, 450, 24);
-        track_control_ = control(L"STATIC", L"", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 20, 370, 450, 24);
-        if (demo_) for (HWND item : {client_, country_, artwork_, motion_, startup_}) EnableWindow(item, FALSE);
+        control(L"STATIC", L"Artwork sends track tags to Apple. Animated covers upload\npublic images to this repository using your GitHub sign-in.", 0, 20, 278, 450, 46);
+        control(L"BUTTON", L"Save", WS_TABSTOP | BS_DEFPUSHBUTTON, 20, 334, 90, 28, id_save);
+        control(L"STATIC", L"Closing this window keeps sharing. Exit from the tray icon.", 0, 20, 373, 450, 24);
+        status_control_ = control(L"STATIC", L"Starting…", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 20, 405, 450, 24);
+        track_control_ = control(L"STATIC", L"", SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 20, 434, 450, 24);
+        art_status_control_ = control(L"STATIC", L"", 0, 20, 463, 450, 40);
+        if (demo_) for (HWND item : {client_, country_, artwork_, motion_, repository_, startup_}) EnableWindow(item, FALSE);
     }
     void add_tray() {
         NOTIFYICONDATAW data{}; data.cbSize = sizeof(data); data.hWnd = window_; data.uID = 1;
@@ -175,6 +179,7 @@ private:
         SetWindowTextW(status_control_, message.c_str());
         std::wstring track = status.snapshot.track ? amp::wide(status.snapshot.track->title + " — " + status.snapshot.track->artist) : L"";
         SetWindowTextW(track_control_, track.c_str());
+        SetWindowTextW(art_status_control_, amp::wide(status.artwork_status).c_str());
         NOTIFYICONDATAW data{}; data.cbSize = sizeof(data); data.hWnd = window_; data.uID = 1; data.uFlags = NIF_TIP | NIF_SHOWTIP;
         auto tip = L"Apple Music Presence\n" + message; tip.resize(std::min<size_t>(tip.size(), 127));
         wcscpy_s(data.szTip, tip.c_str()); if (tray_added_) Shell_NotifyIconW(NIM_MODIFY, &data);
@@ -192,6 +197,7 @@ private:
     void save() {
         if (demo_) { ShowWindow(window_, SW_HIDE); KillTimer(window_, 1); return; }
         auto changed = settings_;
+        changed.artwork_repository = amp::utf8(control_text(repository_));
         changed.client_id = amp::utf8(control_text(client_)); changed.country = amp::utf8(control_text(country_));
         std::transform(changed.country.begin(), changed.country.end(), changed.country.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
         changed.artwork = SendMessageW(artwork_, BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -245,7 +251,7 @@ private:
     std::filesystem::path directory_;
     bool demo_{}, paused_{}, tray_added_{}, startup_initial_{};
     double seconds_{};
-    HWND window_{}, client_{}, country_{}, artwork_{}, motion_{}, startup_{}, status_control_{}, track_control_{};
+    HWND window_{}, client_{}, country_{}, artwork_{}, motion_{}, repository_{}, startup_{}, status_control_{}, track_control_{}, art_status_control_{};
     UINT taskbar_created_{};
     HICON icon_{}; HFONT font_{};
     std::mutex mutex_;

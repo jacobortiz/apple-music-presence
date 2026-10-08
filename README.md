@@ -2,7 +2,7 @@
 
 A Windows desktop app that shares the current Apple Music track on Discord.
 
-A lightweight [C++ tray preview](native/README.md) is also available. It runs without Python and supports core sharing, normal artwork, and existing hosted animations. New motion-cover preparation is still being ported.
+A lightweight [C++ tray app](native/README.md) is also available. It runs without Python and supports sharing, exact artwork matching, and automatic animated covers. FFmpeg runs only when a new animation needs preparation.
 
 - **Member list:** the current artist.
 - **Profile:** “Listening to Apple Music,” song, artist, album cover, and playback progress. Hover the cover for the album name.

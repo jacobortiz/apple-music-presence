@@ -1,7 +1,10 @@
 #pragma once
 
 #include "amp/model.hpp"
+#include "amp/http.hpp"
+#include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -9,15 +12,27 @@
 
 namespace amp {
 struct Settings;
+struct ArtworkDependencies {
+    // Optional seams for deterministic offline worker tests; production uses
+    // the bounded public HTTP transport and native motion/hosting pipeline.
+    std::function<HttpResponse(std::string_view, size_t, HANDLE)> http;
+    std::function<std::optional<Artwork>(const Track&, std::string_view, HANDLE)> motion;
+    std::chrono::milliseconds request_interval{3200};
+};
 
 // Called by the dedicated artwork worker, never by media polling or the UI.
 class ArtworkResolver {
 public:
-    ArtworkResolver(const Settings& settings, std::filesystem::path data_dir);
+    ArtworkResolver(const Settings& settings, std::filesystem::path data_dir,
+                    std::function<void()> changed = {}, ArtworkDependencies dependencies = {});
     ~ArtworkResolver();
     ArtworkResolver(const ArtworkResolver&) = delete;
     ArtworkResolver& operator=(const ArtworkResolver&) = delete;
     std::optional<Artwork> resolve(const Track& track);
+    // Non-blocking: only a previously verified song can reuse/queue motion.
+    std::optional<Artwork> refresh(const Track& track);
+    std::string status(const Track& track);
+    void cancel() noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

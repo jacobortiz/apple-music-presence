@@ -17,9 +17,10 @@ struct ArtResult { std::optional<Track> track; std::optional<Artwork> cover; };
 class ArtWorker {
 public:
     ArtWorker(const Settings& settings, const std::filesystem::path& directory, HANDLE wake)
-        : resolver_(settings, directory), wake_(wake), thread_([this] { run(); }) {}
+        : resolver_(settings, directory, [wake] { SetEvent(wake); }), wake_(wake), thread_([this] { run(); }) {}
     ~ArtWorker() {
         { std::lock_guard lock(mutex_); stopped_ = true; pending_.reset(); }
+        resolver_.cancel();
         changed_.notify_one(); thread_.join();
     }
     void request(const Track& track) {
@@ -27,6 +28,9 @@ public:
         changed_.notify_one();
     }
     ArtResult result() { std::lock_guard lock(mutex_); return result_; }
+    void cancel() noexcept { resolver_.cancel(); }
+    std::optional<Artwork> refresh(const Track& track) { return resolver_.refresh(track); }
+    std::string status(const Track& track) { return resolver_.status(track); }
 private:
     void run() {
         for (;;) {
@@ -121,6 +125,7 @@ void Service::run() {
                         cover = result.cover; art_pending = false; had_result = true;
                         art_retry = now + art_delay; art_delay = std::min(60.0, art_delay * 2);
                     }
+                    if (auto animated = artwork->refresh(*snapshot.track)) cover = std::move(animated);
                 }
                 auto effective = snapshot;
                 if (paused_) effective.state = PlaybackState::paused;
@@ -151,6 +156,10 @@ void Service::run() {
                 std::string art_status = !artwork ? "Artwork off" : art_pending ? "Looking up artwork" : cover ?
                     (cover->animated ? "Using a hosted animated cover" : "Normal artwork ready") :
                     had_result ? "No verified cover; retrying during playback" : "Artwork waits for playback";
+                if (artwork && playing) {
+                    auto motion_status = artwork->status(*snapshot.track);
+                    if (!motion_status.empty()) art_status = std::move(motion_status);
+                }
                 notify_(Status{snapshot, message, art_status, connected, paused_});
                 // Native events wake the worker immediately. A 30s heartbeat
                 // also detects missed media events and idle Discord restarts.
@@ -164,6 +173,7 @@ void Service::run() {
                 auto delay = static_cast<DWORD>(std::clamp((deadline - now) * 1000.0, 20.0, 30000.0));
                 if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) break;
             }
+            if (artwork) artwork->cancel();
             try { if (!demo_ && rpc.connected()) rpc.clear(); } catch (...) {}
             rpc.close();
         }

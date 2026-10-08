@@ -1,4 +1,5 @@
 #include <amp/settings.hpp>
+#include <amp/artwork_host.hpp>
 #include <Windows.h>
 #include <ShlObj.h>
 #include <chrono>
@@ -74,6 +75,8 @@ void validate_settings(const Settings& settings) {
         throw std::runtime_error("Enter the 17-20 digit Discord Application ID, not a token.");
     if (!std::regex_match(settings.country, std::regex("[A-Z]{2}")))
         throw std::runtime_error("Enter a two-letter Apple storefront, such as US or GB.");
+    if (!settings.artwork_repository.empty() && !host_detail::valid_repository(settings.artwork_repository))
+        throw std::runtime_error("Enter the public artwork repository as owner/repository, without a URL or token.");
 }
 void save_settings(const Settings& settings, const std::filesystem::path& directory) {
     validate_settings(settings);

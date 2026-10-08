@@ -1,10 +1,12 @@
 #include <amp/presence.hpp>
 #include <amp/settings.hpp>
 #include <Windows.h>
+#include <Shellapi.h>
 #include <cassert>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <string_view>
 
 #ifdef NDEBUG
 #error Native regression checks require assertions to be enabled.
@@ -14,6 +16,11 @@ void test_media();
 void test_rpc();
 void test_artwork();
 void test_service();
+void test_catalog();
+void test_motion();
+void test_artwork_host();
+void test_transport();
+void test_artwork_worker();
 static void test_core() {
     using namespace amp;
     Snapshot snapshot{Track{"Song", "Artist", "Album"}, PlaybackState::playing, 10.0, 200.0, 1000.0};
@@ -53,12 +60,40 @@ static void test_core() {
     std::filesystem::remove(directory / L"settings.json");
     std::filesystem::remove(directory);
 }
-int main() {
+int main(int argc, char* argv[]) {
+    // Hidden child fixtures exercise actual Windows quoting, pipe capture,
+    // timeout and cancellation without a shell, network or external tools.
+    if (argc > 1 && std::string_view(argv[1]).starts_with("--child-")) {
+        auto mode = std::string_view(argv[1]);
+        if (mode == "--child-wait") { Sleep(5000); return 0; }
+        if (mode == "--child-overflow") { std::cout << std::string(1024 * 1024 + 1, 'x'); return 0; }
+        if (mode == "--child-echo") {
+            int count{}; auto args = CommandLineToArgvW(GetCommandLineW(), &count);
+            nlohmann::json output; output["arguments"] = nlohmann::json::array();
+            for (int i = 2; i < count; ++i) output["arguments"].push_back(amp::utf8(args[i]));
+            LocalFree(args);
+            bool secrets{};
+            for (auto name : {L"APPLE_MUSIC_PRESENCE_GITHUB_TOKEN", L"GITHUB_TOKEN", L"GH_TOKEN", L"AMP_FAKE_SECRET"})
+                secrets |= GetEnvironmentVariableW(name, nullptr, 0) != 0;
+            output["secrets"] = secrets;
+            char buffer[4096]{}; DWORD bytes{};
+            ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, sizeof(buffer), &bytes, nullptr);
+            output["input"] = std::string(buffer, bytes);
+            output["interactive"] = GetEnvironmentVariableW(L"GIT_TERMINAL_PROMPT", nullptr, 0) != 0;
+            std::cout << output.dump(); return 0;
+        }
+        return 2;
+    }
     try {
         test_core(); std::cout << "Core settings/presence checks passed\n";
         test_media(); std::cout << "Media checks passed\n";
         test_rpc(); std::cout << "Discord IPC checks passed\n";
         test_artwork(); std::cout << "Artwork checks passed\n";
+        test_catalog(); std::cout << "Apple page and duplicate JPEG checks passed\n";
+        test_motion(); std::cout << "Motion parsing and download bounds checks passed\n";
+        test_artwork_host(); std::cout << "Public hosting and credential safety checks passed\n";
+        test_transport(); std::cout << "HTTP and child cancellation checks passed\n";
+        test_artwork_worker(); std::cout << "Asynchronous artwork upgrade checks passed\n";
         test_service(); std::cout << "Background service checks passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << std::endl; return 1; }

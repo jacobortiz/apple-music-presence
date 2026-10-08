@@ -1,7 +1,9 @@
 #include "amp/artwork.hpp"
 #include "amp/settings.hpp"
 #include <windows.h>
-#include <winhttp.h>
+#include <amp/catalog.hpp>
+#include <amp/motion.hpp>
+#include <amp/artwork_host.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
@@ -109,91 +111,6 @@ std::string encode(std::string_view value) {
         else { result += '%'; result += hex[c >> 4]; result += hex[c & 15]; }
     }
     return result;
-}
-
-struct Internet {
-    HINTERNET handle{};
-    explicit Internet(HINTERNET value) : handle(value) {
-        if (!handle) throw std::runtime_error("Artwork request unavailable");
-    }
-    ~Internet() { WinHttpCloseHandle(handle); }
-    Internet(const Internet&) = delete;
-};
-
-// The heap callback binding retains its state until HANDLE_CLOSING, including
-// after cancellation. Closing a synchronous WinHTTP request from another thread
-// is unsafe; asynchronous completion lets us enforce one absolute deadline.
-struct RequestState {
-    std::mutex mutex;
-    std::condition_variable ready;
-    DWORD status{}, bytes{};
-    bool failed{};
-    std::array<char, 8192> buffer{};
-};
-using Binding = std::shared_ptr<RequestState>;
-void CALLBACK complete(HINTERNET, DWORD_PTR context, DWORD status, void*, DWORD bytes) {
-    if (!context) return;
-    auto* binding = reinterpret_cast<Binding*>(context);
-    const auto state = *binding;
-    if (status == WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) { delete binding; return; }
-    {
-        std::lock_guard lock(state->mutex);
-        if (status == WINHTTP_CALLBACK_STATUS_REQUEST_ERROR) state->failed = true;
-        state->status = status;
-        state->bytes = bytes;
-    }
-    state->ready.notify_all();
-}
-
-std::string fetch(std::string_view path) {
-    Internet session(WinHttpOpen(L"AppleMusicPresence-Native/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
-    WinHttpSetTimeouts(session.handle, 5000, 5000, 5000, 5000);
-    Internet connection(WinHttpConnect(session.handle, L"itunes.apple.com", INTERNET_DEFAULT_HTTPS_PORT, 0));
-    const auto target = to_wide(path);
-    Internet request(WinHttpOpenRequest(connection.handle, L"GET", target.c_str(), nullptr,
-                                       WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
-    DWORD disabled = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
-    if (!WinHttpSetOption(request.handle, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled)))
-        throw std::runtime_error("Artwork request options unavailable");
-    auto state = std::make_shared<RequestState>();
-    if (WinHttpSetStatusCallback(request.handle, complete, WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS
-                                 | WINHTTP_CALLBACK_FLAG_HANDLES, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
-        throw std::runtime_error("Artwork request callback unavailable");
-    auto binding = std::make_unique<Binding>(state);
-    auto context = reinterpret_cast<DWORD_PTR>(binding.get());
-    if (!WinHttpSetOption(request.handle, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context)))
-        throw std::runtime_error("Artwork request context unavailable");
-    binding.release(); // The final HANDLE_CLOSING callback owns this binding.
-    const auto deadline = Clock::now() + std::chrono::seconds(5);
-    auto reset = [&] { std::lock_guard lock(state->mutex); state->status = 0; state->bytes = 0; };
-    auto await = [&](BOOL started, DWORD wanted) {
-        if (!started && GetLastError() != ERROR_IO_PENDING) throw std::runtime_error("Artwork request failed");
-        std::unique_lock lock(state->mutex);
-        if (!state->ready.wait_until(lock, deadline, [&] { return state->failed || state->status == wanted; })
-            || state->failed) throw std::runtime_error("Artwork request timed out or failed");
-        return state->bytes;
-    };
-    await(WinHttpSendRequest(request.handle, L"Accept: application/json\r\n", static_cast<DWORD>(-1L),
-                             WINHTTP_NO_REQUEST_DATA, 0, 0, context), WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE);
-    reset();
-    await(WinHttpReceiveResponse(request.handle, nullptr), WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE);
-    DWORD status{}, size = sizeof(status);
-    if (!WinHttpQueryHeaders(request.handle, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                              WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) || status != 200)
-        throw std::runtime_error("Artwork catalog returned an error");
-    std::string payload;
-    while (true) {
-        if (Clock::now() >= deadline) throw std::runtime_error("Artwork request timed out");
-        reset();
-        const auto bytes = await(WinHttpReadData(request.handle, state->buffer.data(), static_cast<DWORD>(state->buffer.size()), nullptr),
-                                 WINHTTP_CALLBACK_STATUS_READ_COMPLETE);
-        if (!bytes) break;
-        if (bytes > state->buffer.size() || payload.size() + bytes > max_json)
-            throw std::runtime_error("Artwork response is too large");
-        payload.append(state->buffer.data(), bytes);
-    }
-    return payload;
 }
 
 std::string track_key(const Track& track) {
@@ -354,65 +271,227 @@ std::optional<Artwork> cached_motion(std::string_view payload, std::string_view 
 struct ArtworkResolver::Impl {
     Settings settings;
     std::filesystem::path data_dir;
+    ArtworkDependencies dependencies;
+    CatalogResolver catalog;
+    std::function<void()> changed;
+    HANDLE stop{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
     struct Entry { std::string key; std::optional<Artwork> artwork; Clock::time_point expires; };
     std::list<Entry> cache;
     Clock::time_point next_request{};
-    explicit Impl(const Settings& value, std::filesystem::path path) : settings(value), data_dir(std::move(path)) {}
+    struct Alias { std::string key, page; Clock::time_point expires; };
+    struct Motion { std::string key; std::optional<Artwork> cover; double expires; std::string message; };
+    struct Job { Track track; std::string page, key; };
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::list<Alias> aliases;
+    std::list<Motion> motions;
+    std::optional<Job> pending, active;
+    std::optional<std::string> wanted;
+    std::thread worker;
+    Impl(const Settings& value, std::filesystem::path path, std::function<void()> notify, ArtworkDependencies hooks)
+        : settings(value), data_dir(std::move(path)), dependencies(std::move(hooks)),
+          catalog(value.country, dependencies.http, dependencies.request_interval), changed(std::move(notify)) {
+        if (!stop) throw std::runtime_error("Artwork cancellation unavailable");
+        if (!dependencies.http) dependencies.http = http_get;
+        try {
+            if (settings.artwork && settings.motion_artwork && host_detail::valid_repository(settings.artwork_repository)) {
+                load_motion();
+                worker = std::thread([this] { run(); });
+            }
+        } catch (...) { CloseHandle(stop); throw; }
+    }
+    ~Impl() { cancel(); if (worker.joinable()) worker.join(); CloseHandle(stop); }
+    bool cancelled() const { return WaitForSingleObject(stop, 0) == WAIT_OBJECT_0; }
+    void cancel() noexcept { SetEvent(stop); ready.notify_all(); }
+    void signal() { if (changed && !cancelled()) { try { changed(); } catch (...) {} } }
+    void load_motion() {
+        auto data = read_file(data_dir / "motion_cache.json");
+        if (!data) return;
+        try {
+            const auto json = parse(*data, max_file);
+            if (string_field(json, "repository") != settings.artwork_repository
+                || string_field(json, "encoding_profile") != encoding_profile
+                || !json.contains("albums") || !json["albums"].is_object()) return;
+            static const std::regex key_pattern(R"(^album:[a-z]{2}:[0-9]{1,20}$)");
+            for (const auto& [key, row] : json["albums"].items()) {
+                if (motions.size() >= 128) break;
+                if (!row.is_object() || !row.contains("expires") || !row["expires"].is_number()) continue;
+                auto expiry = row["expires"].get<double>();
+                if (!(expiry > unix_time() && expiry <= unix_time() + 8 * 86400)) continue;
+                if (row.contains("cover") && row["cover"].is_null() && std::regex_match(key, key_pattern)) {
+                    motions.push_back({key, {}, expiry, "No motion cover; using normal artwork"}); continue;
+                }
+                if (!row.contains("cover") || !row["cover"].is_object()) continue;
+                const auto page = string_field(row["cover"], "track_url");
+                const auto verified_key = artwork_detail::album_key(page);
+                if (!verified_key) continue;
+                Json one = json; one["albums"] = Json{{key, row}};
+                auto cover = artwork_detail::cached_motion(one.dump(), settings.artwork_repository, page, unix_time());
+                if (cover && std::none_of(motions.begin(), motions.end(), [&](const Motion& m) { return m.key == *verified_key; }))
+                    motions.push_back({*verified_key, std::move(cover), expiry, "Animated cover ready"});
+            }
+        } catch (...) { /* Invalid optional cache cannot hide normal artwork. */ }
+    }
+    Json motion_data() {
+        Json albums = Json::object();
+        for (const auto& row : motions) {
+            Json cover = row.cover ? Json{{"url", row.cover->url}, {"track_url", row.cover->track_url}} : Json(nullptr);
+            albums[row.key] = Json{{"cover", std::move(cover)}, {"expires", row.expires}};
+        }
+        return Json{{"repository", settings.artwork_repository}, {"encoding_profile", encoding_profile}, {"albums", albums}};
+    }
+    void save_motion(const Json& data) {
+        auto text = data.dump();
+        if (text.size() > max_file || cancelled()) return;
+        wchar_t temporary[MAX_PATH]{};
+        try {
+            std::filesystem::create_directories(data_dir);
+            if (!GetTempFileNameW(data_dir.c_str(), L"amp", 0, temporary)) return;
+            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+            file << text; file.close();
+            if (file && !cancelled()) MoveFileExW(temporary, (data_dir / "motion_cache.json").c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+            DeleteFileW(temporary);
+        } catch (...) { if (temporary[0]) DeleteFileW(temporary); }
+    }
+    std::optional<Artwork> motion_for(const Track& track, bool select = false) {
+        if (!worker.joinable() || cancelled()) return {};
+        std::lock_guard lock(mutex);
+        const auto key = track_key(track);
+        if (select || !wanted) wanted = key;
+        if (*wanted != key) return {};
+        auto alias = std::find_if(aliases.begin(), aliases.end(), [&](const Alias& a) { return a.key == key && a.expires > Clock::now(); });
+        if (alias == aliases.end()) { pending.reset(); return {}; }
+        auto album = artwork_detail::album_key(alias->page);
+        if (!album) return {};
+        if (pending && pending->key != *album) pending.reset();
+        auto row = std::find_if(motions.begin(), motions.end(), [&](const Motion& m) { return m.key == *album; });
+        if (row != motions.end()) {
+            if (row->expires > unix_time()) return row->cover;
+            motions.erase(row);
+        }
+        if ((!active || active->key != *album) && (!pending || pending->key != *album)) {
+            pending = Job{track, alias->page, *album}; // One active album + only the latest queued album.
+            ready.notify_one();
+        }
+        return {};
+    }
+    void remember(const Track& track, const Artwork& cover) {
+        if (!worker.joinable() || !catalog_detail::apple_album_page(cover.track_url)) return;
+        const auto page = *catalog_detail::apple_album_page(cover.track_url);
+        std::lock_guard lock(mutex);
+        const auto key = track_key(track);
+        aliases.remove_if([&](const Alias& a) { return a.key == key; });
+        aliases.push_front({key, page, Clock::now() + std::chrono::hours(24)});
+        if (aliases.size() > 128) aliases.pop_back();
+    }
+    std::optional<Artwork> prepare(const Job& job) {
+        if (dependencies.motion) return dependencies.motion(job.track, job.page, stop);
+        auto prepared = prepare_motion(job.page, job.track.album, {}, data_dir, stop);
+        if (!prepared) return {};
+        GithubArtworkHost host(settings.artwork_repository);
+        const auto id = job.key.substr(job.key.rfind(':') + 1);
+        return Artwork{host.publish(id, prepared->stream, prepared->webp, stop), job.page, true};
+    }
+    void run() {
+        for (;;) {
+            Job job;
+            { std::unique_lock lock(mutex); ready.wait(lock, [&] { return cancelled() || pending.has_value(); });
+              if (cancelled()) return; job = *pending; active = job; pending.reset(); }
+            signal();
+            std::optional<Artwork> cover;
+            double ttl = 86400;
+            std::string message = "No motion cover; using normal artwork";
+            try {
+                cover = prepare(job);
+                if (cover) {
+                    // Validate the persistent URL/album association, even for injected providers.
+                    Json row{{"cover", {{"url", cover->url}, {"track_url", cover->track_url}}}, {"expires", unix_time() + 7 * 86400}};
+                    Json data{{"repository", settings.artwork_repository}, {"encoding_profile", encoding_profile}, {"albums", {{job.key, row}}}};
+                    cover = artwork_detail::cached_motion(data.dump(), settings.artwork_repository, job.page, unix_time());
+                    if (!cover) throw std::runtime_error("Unverified motion publication");
+                    ttl = 7 * 86400; message = "Animated cover ready";
+                }
+            } catch (...) {
+                cover.reset(); ttl = 60;
+                message = "Motion unavailable; using normal artwork and retrying in a minute";
+            }
+            if (cancelled()) return;
+            Json data;
+            { std::lock_guard lock(mutex);
+              active.reset(); motions.remove_if([&](const Motion& m) { return m.key == job.key; });
+              motions.push_front({job.key, std::move(cover), unix_time() + ttl, std::move(message)});
+              if (motions.size() > 128) motions.pop_back(); data = motion_data(); }
+            save_motion(data);
+            signal();
+        }
+    }
 };
 
-ArtworkResolver::ArtworkResolver(const Settings& settings, std::filesystem::path data_dir)
-    : impl_(std::make_unique<Impl>(settings, std::move(data_dir))) {}
+ArtworkResolver::ArtworkResolver(const Settings& settings, std::filesystem::path data_dir,
+                                 std::function<void()> changed, ArtworkDependencies dependencies)
+    : impl_(std::make_unique<Impl>(settings, std::move(data_dir), std::move(changed), std::move(dependencies))) {}
 ArtworkResolver::~ArtworkResolver() = default;
-
+void ArtworkResolver::cancel() noexcept { impl_->cancel(); }
+std::optional<Artwork> ArtworkResolver::refresh(const Track& track) { return impl_->motion_for(track, true); }
+std::string ArtworkResolver::status(const Track& track) {
+    if (!impl_->settings.motion_artwork) return {};
+    std::lock_guard lock(impl_->mutex);
+    auto alias = std::find_if(impl_->aliases.begin(), impl_->aliases.end(), [&](const auto& a) { return a.key == track_key(track); });
+    if (alias == impl_->aliases.end()) return {};
+    auto key = artwork_detail::album_key(alias->page);
+    if (!key) return {};
+    if ((impl_->active && impl_->active->key == *key) || (impl_->pending && impl_->pending->key == *key))
+        return "Preparing motion cover; using normal artwork";
+    auto row = std::find_if(impl_->motions.begin(), impl_->motions.end(), [&](const auto& m) { return m.key == *key; });
+    return row == impl_->motions.end() ? "" : row->message;
+}
 std::optional<Artwork> ArtworkResolver::resolve(const Track& track) {
-    if (!impl_->settings.artwork || !valid_metadata(track)) return {};
+    if (!impl_->settings.artwork || !valid_metadata(track) || impl_->cancelled()) return {};
     const auto key = track_key(track);
     auto cached = std::find_if(impl_->cache.begin(), impl_->cache.end(), [&](const auto& entry) { return entry.key == key; });
     if (cached != impl_->cache.end()) {
         if (cached->expires > Clock::now()) {
             const auto artwork = cached->artwork;
             impl_->cache.splice(impl_->cache.begin(), impl_->cache, cached);
+            if (artwork && !artwork->animated) { impl_->remember(track, *artwork); if (auto motion = impl_->motion_for(track)) return motion; }
             return artwork;
         }
         impl_->cache.erase(cached);
     }
     std::optional<Artwork> result;
     auto ttl = std::chrono::seconds(600);
-    try {
-        if (impl_->settings.motion_artwork) {
-            // Same explicit map as the Python app. It does not imply that a
-            // similarly named deluxe/live/remastered edition has this cover.
-            constexpr auto bundled = R"({"version":1,"albums":[{"artist":"The Weeknd","album":"After Hours","image_url":"https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours-hq.webp","album_url":"https://music.apple.com/us/album/after-hours/1499378108"}]})";
-            if (auto custom = read_file(impl_->data_dir / "album_artwork.json")) {
-                try { result = artwork_detail::mapped_cover(*custom, track); } catch (const std::exception&) {}
-            }
-            if (!result) result = artwork_detail::mapped_cover(bundled, track);
+    bool transient = false;
+    if (impl_->settings.motion_artwork) {
+        constexpr auto bundled = R"({"version":1,"albums":[{"artist":"The Weeknd","album":"After Hours","image_url":"https://raw.githubusercontent.com/jacobortiz/apple-music-presence/main/artwork/after-hours-hq.webp","album_url":"https://music.apple.com/us/album/after-hours/1499378108"}]})";
+        if (auto custom = read_file(impl_->data_dir / "album_artwork.json")) {
+            try { result = artwork_detail::mapped_cover(*custom, track); } catch (...) {}
         }
-        if (!result) {
-            const auto country = ascii_lower(impl_->settings.country);
-            if (country.size() != 2 || !std::all_of(country.begin(), country.end(), [](char c) { return c >= 'a' && c <= 'z'; }))
-                return {};
-            std::this_thread::sleep_until(impl_->next_request);
-            impl_->next_request = Clock::now() + std::chrono::milliseconds(3200);
-            const auto path = "/search?term=" + encode(track.title + " " + track.artist + " " + track.album)
-                + "&country=" + country + "&media=music&entity=song&limit=25";
-            result = artwork_detail::catalog_match(fetch(path), track);
-            if (result && impl_->settings.motion_artwork && !result->track_url.empty()) {
-                if (const auto motion = read_file(impl_->data_dir / "motion_cache.json")) {
-                    const auto now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-                    try {
-                        if (auto animated = artwork_detail::cached_motion(*motion, impl_->settings.artwork_repository, result->track_url, now))
-                            result = std::move(animated);
-                    } catch (const std::exception&) {} // A corrupt optional cache never hides valid static art.
-                }
-            }
-        }
-        if (result) ttl = std::chrono::seconds(86400);
-    } catch (const std::exception&) {
-        ttl = std::chrono::seconds(10); // Temporary failures must be retried, not cached as absent.
+        if (!result) result = artwork_detail::mapped_cover(bundled, track);
     }
+    if (!result) {
+        try {
+            auto wait = impl_->next_request - Clock::now();
+            if (wait > Clock::duration::zero() && WaitForSingleObject(impl_->stop, static_cast<DWORD>(std::chrono::duration_cast<std::chrono::milliseconds>(wait).count())) == WAIT_OBJECT_0)
+                return {};
+            impl_->next_request = Clock::now() + impl_->dependencies.request_interval;
+            const auto url = "https://itunes.apple.com/search?term=" + encode(track.title + " " + track.artist + " " + track.album)
+                + "&country=" + ascii_lower(impl_->settings.country) + "&media=music&entity=song&limit=25";
+            auto response = impl_->dependencies.http(url, max_json, impl_->stop);
+            if (response.status != 200) throw std::runtime_error("Artwork catalog unavailable");
+            auto candidates = catalog_detail::song_candidates(response.body, track);
+            result = catalog_detail::known_cover(candidates);
+            if (!result) result = shared_cover(candidates, impl_->stop, impl_->dependencies.http);
+        } catch (...) { transient = true; }
+        if (!result && !impl_->cancelled()) {
+            try { result = impl_->catalog.page_cover(track, impl_->stop); transient |= impl_->catalog.retryable(); } catch (...) { transient = true; }
+        }
+    }
+    if (impl_->cancelled()) return {};
+    if (result) ttl = std::chrono::seconds(86400);
+    else if (transient) ttl = std::chrono::seconds(10);
     impl_->cache.push_front({key, result, Clock::now() + ttl});
     if (impl_->cache.size() > 128) impl_->cache.pop_back();
+    if (result && !result->animated) { impl_->remember(track, *result); if (auto motion = impl_->motion_for(track)) return motion; }
     return result;
 }
 }
