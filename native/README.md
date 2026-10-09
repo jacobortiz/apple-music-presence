@@ -20,8 +20,8 @@ Tests use fake Discord pipes, public-catalog/hosting fixtures, and isolated chil
 ## Architecture
 
 - `MediaBackend` uses [Windows media sessions](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssession) and wakes the service on playback events.
-- `Service` coordinates playback and sharing, with a 30-second health check, reconnect backoff, and a five-second minimum between changed activities.
-- `DiscordRpc` uses [Discord's documented local RPC](https://docs.discord.com/developers/topics/rpc). Pause, stop, and exit clear the activity.
+- `Service` coordinates playback and sharing, with a 30-second health check and reconnect backoff. Changed activities can send one second apart, with four updates plus one clear per rolling 20.05-second window. Failed attempts count; reconnects and settings changes retain the budget. Pending changes use the latest state. Exit clears when capacity allows, then closes IPC promptly.
+- `DiscordRpc` uses [Discord's documented local RPC](https://docs.discord.com/developers/topics/rpc). Clears on pause/stop use the same rate budget; exit makes a best-effort clear.
 - `ArtworkResolver` checks exact song metadata, exact artist/full album edition, then public Apple Music pages. Identical duplicate covers can share display artwork; uncertain releases omit album links and animation.
 - Background artwork/motion workers keep lookup, encoding, and upload work off the UI thread. Downloads and conversion are bounded; exit cancels work.
 - Verified public motion covers are reused before conversion or credential access. UI status changes drive refreshes without a periodic redraw timer.

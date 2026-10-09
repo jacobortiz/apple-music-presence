@@ -5,7 +5,8 @@ The native Windows app was checked on Windows 11 x64 with Visual Studio 2022, MS
 | Check | Result |
 | --- | --- |
 | Build | Clean x64 C++20 Release build with a static runtime. No private source paths in the executable; test assertions remain enabled. |
-| Automated tests | Eleven groups passed, covering media/IPC, exact song/album/page matching, duplicate JPEGs, bounded HLS/WebP, credentials and hosting, same-song upgrades, reconnects, and cancellation. |
+| Automated tests | Twelve groups passed, covering media/IPC, exact song/album/page matching, duplicate JPEGs, bounded HLS/WebP, credentials and hosting, same-song upgrades, reconnects, cancellation, and update scheduling. |
+| Update scheduling | Virtual-time checks cover one-second spacing, rapid changes, rolling-window boundaries, reserved clearing capacity, failed sends, reconnects, timestamp jitter, seeks, and unchanged-activity heartbeats. |
 | Album fallback | Fixtures cover unmatched titles, album caching, strict artist/edition matching, ambiguity, temporary failures, and cancellation. A live public Apple lookup found the exact album after an intentionally unmatched song title. |
 | Motion | Live Apple motion discovery, metadata-free WebP conversion, public GitHub publication, and immutable image verification passed. |
 | Public cover reuse | Offline fixtures verify unauthenticated reuse, missing/rate-limited branches, malformed/oversized images, and cancellation. Current live discovery succeeded; reuse returned a verified miss because the public `motion-artwork` branch is absent. |
@@ -19,3 +20,5 @@ A nine-second offline, windowless preview used 10.78 MiB working memory and 1.62
 Discord controls final profile rendering, image caching, and animation playback. Verify those visually on your profile. See [setup](README.md#setup) and [build/test instructions](native/README.md).
 
 The cleanup build passed all eleven test groups, the tray check without periodic refreshes, and exact-content/private-path checks of the extracted portable package. Startup save now reconciles the current executable with the registry; this was reviewed without changing the user's startup registration.
+
+The change-driven build passed all twelve groups, offline tray checks, and portable-package checks from a separate output folder while the existing app stayed running. No live profile changes were made during these checks; Discord controls the visible delivery time.
