@@ -1,4 +1,5 @@
 #include <amp/service.hpp>
+#include <amp/activity_schedule.hpp>
 #include <amp/artwork.hpp>
 #include <amp/discord_rpc.hpp>
 #include <amp/media.hpp>
@@ -75,6 +76,7 @@ void Service::run() {
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         HANDLE events[]{stop_event_, wake_event_};
+        ActivitySchedule updates; // Reconnects and settings changes retain the same rate budget.
         while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
             Settings settings; unsigned version;
             { std::lock_guard lock(mutex_); settings = settings_; version = version_; }
@@ -84,15 +86,15 @@ void Service::run() {
                 if (WaitForMultipleObjects(2, events, FALSE, INFINITE) == WAIT_OBJECT_0) break;
                 continue;
             }
+            updates.disconnected();
             DiscordRpc rpc(demo_ ? "0" : settings.client_id, stop_event_);
             std::unique_ptr<MediaBackend> media;
             std::unique_ptr<ArtWorker> artwork;
             if (!demo_ && settings.artwork) artwork = std::make_unique<ArtWorker>(settings, directory_, wake_event_);
             std::optional<Track> art_track;
             std::optional<Artwork> cover;
-            bool art_pending{}, had_result{}, acknowledged{};
-            nlohmann::json sent = nullptr;
-            double last_sent = -1e9, next_connect = 0, retry = 1, art_retry = 0, art_delay = 10, grace = 0;
+            bool art_pending{}, had_result{};
+            double next_connect = 0, retry = 1, art_retry = 0, art_delay = 10, grace = 0;
             const double demo_start = unix_time();
             for (;;) {
                 if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) break;
@@ -127,32 +129,32 @@ void Service::run() {
                     }
                     if (auto animated = artwork->refresh(*snapshot.track)) cover = std::move(animated);
                 }
+                bool connected = demo_ || rpc.connected();
+                if (!connected && now >= next_connect) {
+                    try { rpc.connect(); connected = true; updates.disconnected(); retry = 1; }
+                    catch (...) { next_connect = seconds(Clock::now()) + retry; retry = std::min(30.0, retry * 2); }
+                }
+                now = seconds(Clock::now()); // Media reads and IPC connection setup can take time.
                 auto effective = snapshot;
                 if (paused_) effective.state = PlaybackState::paused;
                 auto activity = presence(effective, unix_time(), cover);
-                bool connected = demo_ || rpc.connected();
-                if (!connected && now >= next_connect) {
-                    try { rpc.connect(); connected = true; acknowledged = false; retry = 1; }
-                    catch (...) { next_connect = now + retry; retry = std::min(30.0, retry * 2); }
-                }
                 if (connected) {
                     try {
-                        if (activity.is_null()) {
-                            if (!acknowledged || !sent.is_null() || now - last_sent >= 30) {
-                                if (!demo_) rpc.clear(); sent = nullptr; acknowledged = true; last_sent = now;
-                            }
-                        } else if ((!acknowledged || materially_changed(sent, activity) || now - last_sent >= 30)
-                                   && now - last_sent >= 5 && (!art_pending || cover || now >= grace)) {
-                            if (!demo_) rpc.update(activity); sent = activity; acknowledged = true; last_sent = now;
+                        if (updates.due(activity, now) && (activity.is_null() || !art_pending || cover || now >= grace)) {
+                            // Count attempts before IPC: a lost acknowledgement may still have applied the update.
+                            updates.attempt(activity, now);
+                            if (!demo_) { if (activity.is_null()) rpc.clear(); else rpc.update(activity); }
+                            updates.acknowledge(activity, seconds(Clock::now()));
                         }
                     } catch (...) {
-                        rpc.close(); connected = false; acknowledged = false;
-                        next_connect = now + retry; retry = std::min(30.0, retry * 2);
+                        rpc.close(); connected = false; updates.disconnected();
+                        next_connect = seconds(Clock::now()) + retry; retry = std::min(30.0, retry * 2);
                     }
                 }
                 if (paused_) message = "Sharing paused";
                 else if (playing) message = connected ? (demo_ ? "Offline preview" : "Sharing with Discord") : "Discord unavailable; retrying automatically";
-                else if (snapshot.state == PlaybackState::paused) message = "Playback paused; activity cleared";
+                else if (snapshot.state == PlaybackState::paused) message = updates.may_be_active()
+                    ? "Playback paused; clearing activity" : "Playback paused; activity cleared";
                 std::string art_status = !artwork ? "Artwork off" : art_pending ? "Looking up artwork" : cover ?
                     (cover->animated ? "Using a hosted animated cover" : "Normal artwork ready") :
                     had_result ? "No verified cover; retrying during playback" : "Artwork waits for playback";
@@ -166,15 +168,24 @@ void Service::run() {
                 now = seconds(Clock::now());
                 double deadline = now + (demo_ ? 1 : 30);
                 if (!connected) deadline = std::min(deadline, next_connect);
-                if (connected && !activity.is_null() && (!acknowledged || materially_changed(sent, activity)))
-                    deadline = std::min(deadline, std::max(last_sent + 5, art_pending ? grace : now));
-                else if (connected) deadline = std::min(deadline, last_sent + 30);
+                if (connected) {
+                    auto next_update = updates.next(activity, now);
+                    if (!activity.is_null() && art_pending && !cover) next_update = std::max(next_update, grace);
+                    deadline = std::min(deadline, next_update);
+                }
                 if (artwork && playing && !cover && !art_pending) deadline = std::min(deadline, art_retry);
                 auto delay = static_cast<DWORD>(std::clamp((deadline - now) * 1000.0, 20.0, 30000.0));
                 if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) break;
             }
             if (artwork) artwork->cancel();
-            try { if (!demo_ && rpc.connected()) rpc.clear(); } catch (...) {}
+            try {
+                const auto now = seconds(Clock::now());
+                // Exit promptly if the budget is exhausted. Closing IPC never creates another update.
+                if (!demo_ && rpc.connected() && updates.may_be_active() && updates.can_clear(now)) {
+                    updates.attempt(nullptr, now);
+                    rpc.clear(); updates.acknowledge(nullptr, seconds(Clock::now()));
+                }
+            } catch (...) {}
             rpc.close();
         }
         winrt::uninit_apartment();

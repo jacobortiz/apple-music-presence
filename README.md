@@ -50,7 +50,7 @@ URLs must be public HTTPS without queries or fragments; images must end in `.web
 
 ## Troubleshooting and privacy
 
-- Detection uses Windows media events. Changed activities are sent at most every five seconds; Discord can take longer to display them.
+- Windows media events trigger updates up to once per second when the rate budget allows. The app permits five attempts per twenty seconds, reserving one for clearing activity. Rapid changes replace pending state; Discord can take longer to display them. Progress advances from timestamps without per-second pushes.
 - Artwork checks the exact song, then the exact artist and album edition, then public Apple Music pages. Uncertain releases omit the album link and animation. Failed lookups retry during playback.
 - Missing timeline data means no progress bar. Discord controls animation playback and button visibility; check buttons from another account.
 - Artwork opt-in sends track tags to Apple's public services. Motion opt-in uploads metadata-free public covers to GitHub. No local music files, browser cookies, Apple passwords, Discord tokens, telemetry, or per-song history are collected.

@@ -6,7 +6,8 @@
 - Reconcile Windows startup with the current executable when saving, and remove redundant periodic settings refreshes.
 - Replace the Python app with the C++20 tray app; remove Python source, tests, dependencies, and build files.
 - Add event-driven media detection, Discord IPC, reconnects, pause/stop clearing, and optional Windows startup.
-- Show the current artist in the member list while retaining the Apple Music profile heading; send changed activities at most every five seconds.
+- Show the current artist in the member list while retaining the Apple Music profile heading.
+- Send changed activities one second apart when the rolling rate budget allows; coalesce rapid changes and reserve capacity for clearing activity.
 - Match exact songs, artists, and album editions, with album/public-page fallback and strict duplicate-cover comparison.
 - Prepare and host animated covers in the background, updating the current song while preserving normal art on failure.
 - Request 1024px normal artwork and 768px motion covers, with bounded conversion, caching, downloads, and cancellation.
